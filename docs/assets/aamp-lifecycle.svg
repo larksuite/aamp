@@ -1,0 +1,30 @@
+<svg width="1200" height="420" viewBox="0 0 1200 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="420" rx="28" fill="#0B1220"/>
+  <text x="64" y="84" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Task lifecycle</text>
+  <text x="64" y="122" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="22">AAMP makes long-running work explicit, observable, and resumable through standard mailbox messages.</text>
+
+  <rect x="64" y="196" width="180" height="116" rx="18" fill="#172554" stroke="#60A5FA"/>
+  <text x="94" y="246" fill="#DBEAFE" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">1. Dispatch</text>
+  <text x="94" y="282" fill="#BFDBFE" font-family="Arial, Helvetica, sans-serif" font-size="18">Title, timeout, context, task id</text>
+
+  <rect x="300" y="196" width="180" height="116" rx="18" fill="#052E16" stroke="#34D399"/>
+  <text x="342" y="246" fill="#DCFCE7" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">2. Ack</text>
+  <text x="330" y="282" fill="#BBF7D0" font-family="Arial, Helvetica, sans-serif" font-size="18">Worker confirms reception</text>
+
+  <rect x="536" y="196" width="180" height="116" rx="18" fill="#3F2A06" stroke="#F59E0B"/>
+  <text x="564" y="246" fill="#FEF3C7" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">3. Help</text>
+  <text x="564" y="282" fill="#FDE68A" font-family="Arial, Helvetica, sans-serif" font-size="18">Escalate ambiguity to a human</text>
+
+  <rect x="772" y="196" width="180" height="116" rx="18" fill="#3B0764" stroke="#C084FC"/>
+  <text x="790" y="246" fill="#F3E8FF" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">4. Result</text>
+  <text x="790" y="282" fill="#E9D5FF" font-family="Arial, Helvetica, sans-serif" font-size="18">Output, errors, attachments</text>
+
+  <rect x="1008" y="196" width="128" height="116" rx="18" fill="#1F2937" stroke="#94A3B8"/>
+  <text x="1032" y="246" fill="#E5E7EB" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">Loop</text>
+  <text x="1024" y="282" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="18">Retry / follow-up</text>
+
+  <path d="M244 254H288" stroke="#64748B" stroke-width="8" stroke-linecap="round"/>
+  <path d="M480 254H524" stroke="#64748B" stroke-width="8" stroke-linecap="round"/>
+  <path d="M716 254H760" stroke="#64748B" stroke-width="8" stroke-linecap="round"/>
+  <path d="M952 254H996" stroke="#64748B" stroke-width="8" stroke-linecap="round"/>
+</svg>

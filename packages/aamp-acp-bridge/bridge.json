@@ -1,0 +1,22 @@
+{
+  "aampHost": "https://meshmail.ai",
+  "rejectUnauthorized": false,
+  "agents": [
+    {
+      "name": "claude",
+      "acpCommand": "claude",
+      "slug": "claude-bridge",
+      "credentialsFile": "~/.acp-bridge/.aamp-claude.json",
+      "senderWhitelist": [
+        "system@aamp.local"
+      ]
+    },
+    {
+      "name": "openclaw",
+      "acpCommand": "openclaw",
+      "slug": "openclaw-bridge",
+      "credentialsFile": "~/.acp-bridge/.aamp-openclaw.json",
+      "description": "openclaw via ACP bridge"
+    }
+  ]
+}

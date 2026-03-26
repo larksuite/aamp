@@ -1,0 +1,78 @@
+{
+  "name": "aamp-openclaw-plugin",
+  "files": [
+    "dist",
+    "bin",
+    "openclaw.plugin.json",
+    "skills"
+  ],
+  "license": "MIT",
+  "version": "0.1.12",
+  "description": "AAMP Agent Mail Protocol — OpenClaw plugin. Gives OpenClaw an AAMP mailbox identity and lets it receive, process and reply to AAMP tasks.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "aamp-openclaw-plugin": "./bin/aamp-openclaw-plugin.mjs"
+  },
+  "openclaw": {
+    "id": "aamp-openclaw-plugin",
+    "extensions": ["./dist/index.js"],
+    "configSchema": {
+      "type": "object",
+      "properties": {
+        "aampHost": {
+          "type": "string",
+          "description": "AAMP service host, e.g. https://meshmail.ai"
+        },
+        "slug": {
+          "type": "string",
+          "default": "openclaw-agent",
+          "description": "Agent name prefix used in the mailbox address"
+        },
+        "credentialsFile": {
+          "type": "string",
+          "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
+          "description": "Path to persist AAMP credentials between restarts"
+        },
+        "senderPolicies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["sender"],
+            "properties": {
+              "sender": { "type": "string" },
+              "dispatchContextRules": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          },
+          "description": "Per-sender authorization policies. Each sender can optionally require exact-match X-AAMP-Dispatch-Context key/value pairs."
+        }
+      }
+    },
+    "uiHints": {
+      "aampHost": { "label": "AAMP Host", "placeholder": "https://meshmail.ai", "promptOnInstall": true },
+      "slug": { "label": "Agent Slug", "placeholder": "openclaw-agent", "promptOnInstall": false },
+      "credentialsFile": { "label": "Credentials File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json", "promptOnInstall": false },
+      "senderPolicies": { "label": "Sender Policies", "placeholder": "[{\"sender\":\"platform-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]", "promptOnInstall": true }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "dev": "node esbuild.config.js --watch"
+  },
+  "dependencies": {
+    "aamp-sdk": "^0.1.6",
+    "nodemailer": "^6.9.10",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.3"
+  }
+}

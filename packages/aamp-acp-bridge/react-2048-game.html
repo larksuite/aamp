@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>React 2048</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #faf8ef;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 16px;
+    touch-action: none;
+  }
+
+  .container { width: 100%; max-width: 420px; }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+
+  h1 { font-size: 48px; font-weight: 800; color: #776e65; }
+
+  .scores { display: flex; gap: 8px; }
+
+  .score-box {
+    background: #bbada0;
+    color: #fff;
+    border-radius: 6px;
+    padding: 6px 16px;
+    text-align: center;
+    min-width: 70px;
+  }
+
+  .score-box .label { font-size: 11px; text-transform: uppercase; opacity: 0.8; }
+  .score-box .value { font-size: 20px; font-weight: 700; }
+
+  .controls { display: flex; gap: 8px; margin-bottom: 16px; }
+
+  .controls button {
+    padding: 8px 18px;
+    background: #8f7a66;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .controls button:hover { background: #9f8b77; }
+
+  .board {
+    background: #bbada0;
+    border-radius: 8px;
+    padding: 8px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    aspect-ratio: 1;
+    position: relative;
+  }
+
+  .cell {
+    background: rgba(238, 228, 218, 0.35);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 32px;
+    color: #776e65;
+    aspect-ratio: 1;
+    transition: transform 0.08s ease;
+  }
+
+  .cell.pop { animation: pop 0.15s ease; }
+
+  @keyframes pop {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+    100% { transform: scale(1); }
+  }
+
+  .cell[data-val="2"]    { background: #eee4da; }
+  .cell[data-val="4"]    { background: #ede0c8; }
+  .cell[data-val="8"]    { background: #f2b179; color: #f9f6f2; }
+  .cell[data-val="16"]   { background: #f59563; color: #f9f6f2; }
+  .cell[data-val="32"]   { background: #f67c5f; color: #f9f6f2; }
+  .cell[data-val="64"]   { background: #f65e3b; color: #f9f6f2; }
+  .cell[data-val="128"]  { background: #edcf72; color: #f9f6f2; font-size: 28px; }
+  .cell[data-val="256"]  { background: #edcc61; color: #f9f6f2; font-size: 28px; }
+  .cell[data-val="512"]  { background: #edc850; color: #f9f6f2; font-size: 28px; }
+  .cell[data-val="1024"] { background: #edc53f; color: #f9f6f2; font-size: 22px; }
+  .cell[data-val="2048"] { background: #edc22e; color: #f9f6f2; font-size: 22px; }
+  .cell[data-val="4096"] { background: #3c3a32; color: #f9f6f2; font-size: 22px; }
+
+  .overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(238, 228, 218, 0.73);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 10;
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .overlay .msg { font-size: 36px; font-weight: 800; color: #776e65; }
+
+  .overlay button {
+    padding: 10px 24px;
+    background: #8f7a66;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .instructions {
+    margin-top: 12px;
+    font-size: 13px;
+    color: #776e65;
+    opacity: 0.7;
+  }
+
+  @media (max-width: 440px) {
+    .cell { font-size: 24px; }
+    .cell[data-val="128"], .cell[data-val="256"], .cell[data-val="512"] { font-size: 20px; }
+    .cell[data-val="1024"], .cell[data-val="2048"], .cell[data-val="4096"] { font-size: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+const SIZE = 4;
+
+function createEmpty() {
+  return Array.from({ length: SIZE }, () => Array(SIZE).fill(0));
+}
+
+function clone(grid) {
+  return grid.map(row => [...row]);
+}
+
+function spawnTile(grid) {
+  const g = clone(grid);
+  const empty = [];
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      if (g[r][c] === 0) empty.push([r, c]);
+  if (empty.length === 0) return g;
+  const [r, c] = empty[Math.floor(Math.random() * empty.length)];
+  g[r][c] = Math.random() < 0.9 ? 2 : 4;
+  return g;
+}
+
+function slideRow(row) {
+  let arr = row.filter(v => v !== 0);
+  let points = 0;
+  let merged = false;
+  for (let i = 0; i < arr.length - 1; i++) {
+    if (arr[i] === arr[i + 1]) {
+      arr[i] *= 2;
+      points += arr[i];
+      arr.splice(i + 1, 1);
+      merged = true;
+    }
+  }
+  while (arr.length < SIZE) arr.push(0);
+  let moved = merged;
+  if (!moved) {
+    for (let i = 0; i < SIZE; i++) {
+      if (row[i] !== arr[i]) { moved = true; break; }
+    }
+  }
+  return { result: arr, points, moved };
+}
+
+function moveGrid(grid, dir) {
+  const g = clone(grid);
+  let totalPoints = 0;
+  let moved = false;
+
+  if (dir === 'left') {
+    for (let r = 0; r < SIZE; r++) {
+      const s = slideRow(g[r]);
+      if (s.moved) moved = true;
+      totalPoints += s.points;
+      g[r] = s.result;
+    }
+  } else if (dir === 'right') {
+    for (let r = 0; r < SIZE; r++) {
+      const s = slideRow([...g[r]].reverse());
+      if (s.moved) moved = true;
+      totalPoints += s.points;
+      g[r] = s.result.reverse();
+    }
+  } else if (dir === 'up') {
+    for (let c = 0; c < SIZE; c++) {
+      const col = [g[0][c], g[1][c], g[2][c], g[3][c]];
+      const s = slideRow(col);
+      if (s.moved) moved = true;
+      totalPoints += s.points;
+      for (let r = 0; r < SIZE; r++) g[r][c] = s.result[r];
+    }
+  } else if (dir === 'down') {
+    for (let c = 0; c < SIZE; c++) {
+      const col = [g[3][c], g[2][c], g[1][c], g[0][c]];
+      const s = slideRow(col);
+      if (s.moved) moved = true;
+      totalPoints += s.points;
+      for (let r = 0; r < SIZE; r++) g[r][c] = s.result[3 - r];
+    }
+  }
+
+  return { grid: g, points: totalPoints, moved };
+}
+
+function hasMovesLeft(grid) {
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++) {
+      if (grid[r][c] === 0) return true;
+      if (c < SIZE - 1 && grid[r][c] === grid[r][c + 1]) return true;
+      if (r < SIZE - 1 && grid[r][c] === grid[r + 1][c]) return true;
+    }
+  return false;
+}
+
+function hasWon(grid) {
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      if (grid[r][c] === 2048) return true;
+  return false;
+}
+
+function initGrid() {
+  return spawnTile(spawnTile(createEmpty()));
+}
+
+function Cell({ value }) {
+  const val = value || '';
+  const dataVal = value > 2048 ? '4096' : value || undefined;
+  return (
+    <div className={`cell ${value ? 'pop' : ''}`} data-val={dataVal}>
+      {val}
+    </div>
+  );
+}
+
+function Game() {
+  const [grid, setGrid] = useState(initGrid);
+  const [score, setScore] = useState(0);
+  const [best, setBest] = useState(() => parseInt(localStorage.getItem('react-2048-best') || '0'));
+  const [gameState, setGameState] = useState('playing'); // playing | won | lost
+  const touchRef = useRef(null);
+
+  const newGame = useCallback(() => {
+    setGrid(initGrid());
+    setScore(0);
+    setGameState('playing');
+  }, []);
+
+  const handleMove = useCallback((dir) => {
+    if (gameState === 'lost') return;
+
+    setGrid(prev => {
+      const result = moveGrid(prev, dir);
+      if (!result.moved) return prev;
+
+      const newGrid = spawnTile(result.grid);
+      const newScore = score + result.points;
+      setScore(newScore);
+
+      if (newScore > best) {
+        setBest(newScore);
+        localStorage.setItem('react-2048-best', newScore.toString());
+      }
+
+      if (hasWon(newGrid) && gameState !== 'won') {
+        setGameState('won');
+      } else if (!hasMovesLeft(newGrid)) {
+        setGameState('lost');
+      }
+
+      return newGrid;
+    });
+  }, [score, best, gameState]);
+
+  useEffect(() => {
+    const keyMap = {
+      ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down',
+      a: 'left', d: 'right', w: 'up', s: 'down',
+      A: 'left', D: 'right', W: 'up', S: 'down',
+    };
+    const handler = (e) => {
+      if (keyMap[e.key]) {
+        e.preventDefault();
+        handleMove(keyMap[e.key]);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [handleMove]);
+
+  const onTouchStart = (e) => {
+    touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  };
+
+  const onTouchEnd = (e) => {
+    if (!touchRef.current) return;
+    const dx = e.changedTouches[0].clientX - touchRef.current.x;
+    const dy = e.changedTouches[0].clientY - touchRef.current.y;
+    const absDx = Math.abs(dx), absDy = Math.abs(dy);
+    if (Math.max(absDx, absDy) < 30) return;
+    if (absDx > absDy) handleMove(dx > 0 ? 'right' : 'left');
+    else handleMove(dy > 0 ? 'down' : 'up');
+    touchRef.current = null;
+  };
+
+  const keepPlaying = () => setGameState('playing');
+
+  return (
+    <div className="container">
+      <div className="header">
+        <h1>2048</h1>
+        <div className="scores">
+          <div className="score-box">
+            <div className="label">Score</div>
+            <div className="value">{score}</div>
+          </div>
+          <div className="score-box">
+            <div className="label">Best</div>
+            <div className="value">{best}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="controls">
+        <button onClick={newGame}>New Game</button>
+      </div>
+
+      <div className="board" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        {grid.flat().map((val, i) => (
+          <Cell key={i} value={val} />
+        ))}
+
+        {gameState === 'won' && (
+          <div className="overlay">
+            <div className="msg">You Win!</div>
+            <button onClick={keepPlaying}>Keep Playing</button>
+            <button onClick={newGame}>New Game</button>
+          </div>
+        )}
+
+        {gameState === 'lost' && (
+          <div className="overlay">
+            <div className="msg">Game Over</div>
+            <button onClick={newGame}>Try Again</button>
+          </div>
+        )}
+      </div>
+
+      <div className="instructions">
+        Arrow keys or WASD to move tiles. Combine matching numbers to reach 2048!
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Game />);
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<svg width="1200" height="520" viewBox="0 0 1200 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="520" rx="28" fill="#0B1220"/>
+  <text x="64" y="84" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Reference tooling in this repository</text>
+  <text x="64" y="122" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="22">Everything here is portable: it can target any compatible AAMP host, including public endpoints such as meshmail.ai.</text>
+
+  <rect x="64" y="184" width="244" height="220" rx="20" fill="#111827" stroke="#334155"/>
+  <text x="96" y="236" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">aamp-sdk</text>
+  <text x="96" y="276" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Shared protocol model</text>
+  <text x="96" y="304" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">JMAP push + polling fallback</text>
+  <text x="96" y="332" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Header parsing / attachment IO</text>
+
+  <rect x="340" y="184" width="244" height="220" rx="20" fill="#111827" stroke="#334155"/>
+  <text x="372" y="236" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">aamp-cli</text>
+  <text x="372" y="276" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Terminal mailbox participant</text>
+  <text x="372" y="304" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Login, listen, dispatch, result</text>
+  <text x="372" y="332" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Good for demos and ops</text>
+
+  <rect x="616" y="184" width="244" height="220" rx="20" fill="#111827" stroke="#334155"/>
+  <text x="648" y="236" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">OpenClaw plugin</text>
+  <text x="648" y="276" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Turns OpenClaw into a mailbox agent</text>
+  <text x="648" y="304" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Per-sender authorization policies</text>
+  <text x="648" y="332" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Structured task results</text>
+
+  <rect x="892" y="184" width="244" height="220" rx="20" fill="#111827" stroke="#334155"/>
+  <text x="924" y="236" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">ACP bridge</text>
+  <text x="924" y="276" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Attach ACP runtimes to AAMP</text>
+  <text x="924" y="304" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Bridges inbox events into ACP</text>
+  <text x="924" y="332" fill="#CBD5E1" font-family="Arial, Helvetica, sans-serif" font-size="20">Ideal for existing agents</text>
+</svg>

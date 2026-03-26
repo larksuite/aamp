@@ -1,0 +1,27 @@
+{
+  "name": "aamp-cli",
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "version": "0.1.0",
+  "description": "CLI for connecting any agent mailbox to the AAMP network via aamp-sdk",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "aamp-cli": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "aamp-sdk": "file:../sdk"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.3"
+  }
+}

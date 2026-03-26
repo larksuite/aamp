@@ -1,0 +1,44 @@
+<svg width="1200" height="560" viewBox="0 0 1200 560" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="560" rx="32" fill="#0B1220"/>
+  <rect x="28" y="28" width="1144" height="504" rx="24" fill="url(#bg)"/>
+  <text x="72" y="110" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="700">AAMP turns email into an agent-to-agent fabric</text>
+  <text x="72" y="156" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="24">Agent Asynchronous Messaging Protocol uses SMTP + JMAP + X-AAMP-* headers to move tasks between independent runtimes.</text>
+
+  <rect x="84" y="232" width="240" height="180" rx="20" fill="#0F172A" stroke="#334155"/>
+  <text x="112" y="282" fill="#E2E8F0" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">Dispatcher</text>
+  <text x="112" y="324" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="20">CLI</text>
+  <text x="112" y="352" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="20">OpenClaw plugin</text>
+  <text x="112" y="380" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="20">Workflow adapter</text>
+
+  <rect x="480" y="206" width="240" height="232" rx="20" fill="#111827" stroke="#60A5FA" stroke-width="2"/>
+  <text x="518" y="266" fill="#E0F2FE" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">Mailbox Fabric</text>
+  <text x="524" y="312" fill="#BAE6FD" font-family="Arial, Helvetica, sans-serif" font-size="20">SMTP delivery</text>
+  <text x="524" y="342" fill="#BAE6FD" font-family="Arial, Helvetica, sans-serif" font-size="20">JMAP sync</text>
+  <text x="524" y="372" fill="#BAE6FD" font-family="Arial, Helvetica, sans-serif" font-size="20">WebSocket / polling</text>
+  <text x="524" y="402" fill="#BAE6FD" font-family="Arial, Helvetica, sans-serif" font-size="20">Blob download</text>
+
+  <rect x="876" y="232" width="240" height="180" rx="20" fill="#0F172A" stroke="#334155"/>
+  <text x="940" y="282" fill="#E2E8F0" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">Worker</text>
+  <text x="910" y="324" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="20">Agent runtime</text>
+  <text x="910" y="352" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="20">ACP bridge</text>
+  <text x="910" y="380" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="20">Custom SDK app</text>
+
+  <path d="M336 320H468" stroke="#F59E0B" stroke-width="8" stroke-linecap="round"/>
+  <path d="M460 304L488 320L460 336" fill="#F59E0B"/>
+  <text x="332" y="298" fill="#FCD34D" font-family="Arial, Helvetica, sans-serif" font-size="20">task.dispatch</text>
+
+  <path d="M732 320H864" stroke="#34D399" stroke-width="8" stroke-linecap="round"/>
+  <path d="M856 304L884 320L856 336" fill="#34D399"/>
+  <text x="754" y="298" fill="#86EFAC" font-family="Arial, Helvetica, sans-serif" font-size="20">delivery</text>
+
+  <path d="M864 438H336" stroke="#A78BFA" stroke-width="8" stroke-linecap="round"/>
+  <path d="M344 422L316 438L344 454" fill="#A78BFA"/>
+  <text x="618" y="468" fill="#C4B5FD" font-family="Arial, Helvetica, sans-serif" font-size="20">task.ack / task.help / task.result</text>
+
+  <defs>
+    <linearGradient id="bg" x1="28" y1="28" x2="1172" y2="532" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827"/>
+      <stop offset="1" stop-color="#0F172A"/>
+    </linearGradient>
+  </defs>
+</svg>

@@ -1,0 +1,37 @@
+{
+  "id": "aamp-openclaw-plugin",
+  "kind": "channel",
+  "channels": ["aamp"],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "aampHost":        { "type": "string" },
+      "slug":            { "type": "string", "default": "openclaw-agent" },
+      "credentialsFile": { "type": "string", "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json" },
+      "senderPolicies": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["sender"],
+          "properties": {
+            "sender": { "type": "string" },
+            "dispatchContextRules": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "uiHints": {
+    "aampHost":        { "label": "AAMP Host", "placeholder": "https://meshmail.ai", "promptOnInstall": true },
+    "slug":            { "label": "Agent Slug", "placeholder": "openclaw-agent", "promptOnInstall": false },
+    "credentialsFile": { "label": "Credentials File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json", "promptOnInstall": false },
+    "senderPolicies":  { "label": "Sender Policies", "placeholder": "[{\"sender\":\"platform-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]", "promptOnInstall": true }
+  },
+  "skills": ["./skills"]
+}
