@@ -1,7 +1,6 @@
 // esbuild.config.js — transpiles the plugin into ESM files.
-// We intentionally avoid single-file bundling so file I/O helpers stay in a
-// separate module from network code; this keeps OpenClaw's code safety scanner
-// from flagging the entrypoint as a combined local-read + network-send file.
+// Bundle the SDK into the plugin entry so OpenClaw's plugin loader does not
+// have to resolve workspace/file dependencies at runtime.
 
 import esbuild from 'esbuild'
 import { argv } from 'process'
@@ -10,11 +9,12 @@ const watch = argv.includes('--watch')
 
 const ctx = await esbuild.context({
   entryPoints: ['src/index.ts', 'src/file-store.ts'],
-  bundle: false,
+  bundle: true,
   platform: 'node',
   format: 'esm',
   target: 'node18',
   outdir: 'dist',
+  external: ['nodemailer', 'ws'],
   sourcemap: true,
   logLevel: 'info',
 })

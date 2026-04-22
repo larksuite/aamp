@@ -30,17 +30,30 @@
  *   }
  *
  * Install:
- *   openclaw plugins install ./packages/openclaw-plugin
+ *   openclaw plugins install ./packages/aamp-openclaw-plugin
  */
 
 import { AampClient } from 'aamp-sdk'
-import type { TaskDispatch, TaskResult, TaskHelp, AampAttachment, ReceivedAttachment } from 'aamp-sdk'
+import type {
+  AampThreadEvent,
+  TaskDispatch,
+  TaskCancel,
+  TaskResult,
+  TaskHelp,
+  TaskPriority,
+  AampAttachment,
+  ReceivedAttachment,
+} from 'aamp-sdk'
+import { readFileSync } from 'node:fs'
 import {
   defaultCredentialsPath,
+  defaultTaskStatePath,
   ensureDir,
   loadCachedIdentity,
+  loadTaskState,
   readBinaryFile,
   saveCachedIdentity,
+  saveTaskState,
   writeBinaryFile,
   type Identity,
 } from './file-store.js'
@@ -52,8 +65,11 @@ interface PendingTask {
   from: string
   title: string
   bodyText: string
+  threadHistory: AampThreadEvent[]
+  threadContextText: string
+  priority: TaskPriority
+  expiresAt?: string
   contextLinks: string[]
-  timeoutSecs: number
   messageId: string
   receivedAt: string  // ISO-8601
 }
@@ -62,6 +78,9 @@ interface PluginConfig {
   /** e.g. "meshmail.ai" — all URLs are derived from this */
   aampHost: string
   slug?: string
+  summary?: string
+  cardText?: string
+  cardFile?: string
   /** Absolute path to cache AAMP credentials. Default: ~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json */
   credentialsFile?: string
   senderPolicies?: SenderPolicy[]
@@ -72,7 +91,7 @@ interface SenderPolicy {
   dispatchContextRules?: Record<string, string[]>
 }
 
-function matchSenderPolicy(
+export function matchSenderPolicy(
   task: TaskDispatch,
   senderPolicies: SenderPolicy[] | undefined,
 ): { allowed: boolean; reason?: string } {
@@ -124,7 +143,7 @@ type StructuredResultFieldInput = {
 }
 
 /** Normalise aampHost to a base URL with scheme and no trailing slash */
-function baseUrl(aampHost: string): string {
+export function baseUrl(aampHost: string): string {
   if (aampHost.startsWith('http://') || aampHost.startsWith('https://')) {
     return aampHost.replace(/\/$/, '')
   }
@@ -132,6 +151,15 @@ function baseUrl(aampHost: string): string {
 }
 
 const pendingTasks = new Map<string, PendingTask>()
+const activeTaskStreams = new Map<string, string>()
+const terminalTaskIds = new Set<string>(loadTaskState(defaultTaskStatePath()).terminalTaskIds ?? [])
+const AAMP_SESSION_PREFIX = 'aamp:'
+const DEFAULT_OPENCLAW_AGENT_ID = 'main'
+const OPENCLAW_AGENT_SESSION_PREFIX = 'agent:'
+const VALID_OPENCLAW_AGENT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i
+const INVALID_OPENCLAW_AGENT_ID_RE = /[^a-z0-9_-]+/g
+const LEADING_DASH_RE = /^-+/
+const TRAILING_DASH_RE = /-+$/
 // Tracks sub-tasks dispatched TO other agents — waiting for their result/help replies
 const dispatchedSubtasks = new Map<string, { to: string; title: string; dispatchedAt: string; parentTaskId?: string }>()
 // Tracks notification keys that have been shown to LLM (auto-cleaned on next prompt build)
@@ -149,14 +177,58 @@ let lastTransportMode: 'disconnected' | 'websocket' | 'polling' = 'disconnected'
 let lastLoggedTransportMode: 'disconnected' | 'websocket' | 'polling' = 'disconnected'
 let reconcileTimer: NodeJS.Timeout | null = null
 let transportMonitorTimer: NodeJS.Timeout | null = null
-// Tracks the most recently seen session key so task.dispatch can wake the right session.
-// Default 'agent:main:main' is the standard OpenClaw single-agent session key.
-let currentSessionKey = 'agent:main:main'
+let historicalReconcileCompleted = false
 // Channel runtime — captured from channel adapter's startAccount for instant dispatch.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let channelRuntime: any = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let channelCfg: any = null
+
+async function ensureTaskStream(task: PendingTask): Promise<string | null> {
+  if (!aampClient?.isConnected()) return null
+  const existing = activeTaskStreams.get(task.taskId)
+  if (existing) return existing
+
+  const created = await aampClient.createStream({
+    taskId: task.taskId,
+    peerEmail: task.from,
+  })
+  await aampClient.sendStreamOpened({
+    to: task.from,
+    taskId: task.taskId,
+    streamId: created.streamId,
+    inReplyTo: task.messageId || undefined,
+  })
+  await aampClient.appendStreamEvent({
+    streamId: created.streamId,
+    type: 'status',
+    payload: { state: 'running', label: 'Task queued in OpenClaw' },
+  })
+  activeTaskStreams.set(task.taskId, created.streamId)
+  return created.streamId
+}
+
+async function appendTaskStream(taskId: string, type: 'text.delta' | 'progress' | 'status' | 'artifact' | 'error' | 'done', payload: Record<string, unknown>): Promise<void> {
+  if (!aampClient?.isConnected()) return
+  const streamId = activeTaskStreams.get(taskId)
+  if (!streamId) return
+  await aampClient.appendStreamEvent({
+    streamId,
+    type,
+    payload,
+  })
+}
+
+async function closeTaskStream(taskId: string, payload?: Record<string, unknown>): Promise<void> {
+  if (!aampClient?.isConnected()) return
+  const streamId = activeTaskStreams.get(taskId)
+  if (!streamId) return
+  activeTaskStreams.delete(taskId)
+  await aampClient.closeStream({
+    streamId,
+    payload,
+  })
+}
 
 function logTransportState(
   api: { logger: { info: (msg: string) => void; warn: (msg: string) => void } },
@@ -179,11 +251,154 @@ function logTransportState(
   api.logger.info(`[AAMP] Connected — listening as ${email}`)
 }
 
+function isSyntheticPendingKey(taskKey: string): boolean {
+  return taskKey.startsWith('result:') || taskKey.startsWith('help:')
+}
+
+function normalizeOpenClawAgentId(value: unknown): string {
+  const trimmed = typeof value === 'string' ? value.trim() : ''
+  if (!trimmed) return DEFAULT_OPENCLAW_AGENT_ID
+  if (VALID_OPENCLAW_AGENT_ID_RE.test(trimmed)) return trimmed.toLowerCase()
+  return trimmed
+    .toLowerCase()
+    .replace(INVALID_OPENCLAW_AGENT_ID_RE, '-')
+    .replace(LEADING_DASH_RE, '')
+    .replace(TRAILING_DASH_RE, '')
+    .slice(0, 64) || DEFAULT_OPENCLAW_AGENT_ID
+}
+
+function resolveDefaultOpenClawAgentId(config: unknown): string {
+  const agents = (config as { agents?: { list?: Array<{ id?: unknown; default?: unknown }> } } | null | undefined)?.agents?.list
+  if (!Array.isArray(agents) || agents.length === 0) return DEFAULT_OPENCLAW_AGENT_ID
+
+  const defaults = agents.filter((agent) => agent?.default)
+  return normalizeOpenClawAgentId((defaults[0] ?? agents[0])?.id)
+}
+
+function stripOpenClawAgentScope(sessionKey: string): string {
+  const trimmed = sessionKey.trim()
+  if (!trimmed.toLowerCase().startsWith(OPENCLAW_AGENT_SESSION_PREFIX)) return trimmed
+
+  const parts = trimmed.split(':')
+  if (parts.length < 3 || parts[0]?.toLowerCase() !== 'agent') return trimmed
+  return parts.slice(2).join(':')
+}
+
+function isAampSessionKey(sessionKey: unknown): sessionKey is string {
+  return typeof sessionKey === 'string'
+    && stripOpenClawAgentScope(sessionKey).toLowerCase().startsWith(AAMP_SESSION_PREFIX)
+}
+
+function buildOpenClawMainSessionKey(mainKey: string, config: unknown): string {
+  const trimmed = mainKey.trim()
+  if (!trimmed) return `${OPENCLAW_AGENT_SESSION_PREFIX}${resolveDefaultOpenClawAgentId(config)}:main`
+  if (trimmed.toLowerCase().startsWith(OPENCLAW_AGENT_SESSION_PREFIX)) return trimmed
+  return `${OPENCLAW_AGENT_SESSION_PREFIX}${resolveDefaultOpenClawAgentId(config)}:${trimmed}`
+}
+
+function buildAampConversationSessionKey(value: string, config: unknown): string {
+  return buildOpenClawMainSessionKey(`${AAMP_SESSION_PREFIX}default:${value}`, config)
+}
+
+function buildAampTaskSessionKey(taskId: string, config: unknown): string {
+  return buildAampConversationSessionKey(`task:${taskId}`, config)
+}
+
+function buildAampWakeSessionKey(kind: string, id: string): string {
+  return `${AAMP_SESSION_PREFIX}wake:${kind}:${id}`
+}
+
+function saveTerminalTaskIds(): void {
+  saveTaskState({ terminalTaskIds: [...terminalTaskIds] }, defaultTaskStatePath())
+}
+
+function rememberTerminalTask(taskId: string): void {
+  terminalTaskIds.add(taskId)
+  saveTerminalTaskIds()
+}
+
+function priorityRank(priority: TaskPriority): number {
+  switch (priority) {
+    case 'urgent':
+      return 0
+    case 'high':
+      return 1
+    default:
+      return 2
+  }
+}
+
+function hasExpired(task: Pick<PendingTask, 'expiresAt'>): boolean {
+  if (task.expiresAt) {
+    const expiresAtMs = new Date(task.expiresAt).getTime()
+    if (Number.isFinite(expiresAtMs) && Date.now() >= expiresAtMs) return true
+  }
+  return false
+}
+
+function isTransientTransportError(message: string): boolean {
+  return [
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'ECONNREFUSED',
+    'EPIPE',
+    'UND_ERR_SOCKET',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'fetch failed',
+  ].some((needle) => message.includes(needle))
+}
+
+function nextPendingEntry(): [string, PendingTask] | undefined {
+  const entries = [...pendingTasks.entries()]
+  const notifications = entries.filter(([key]) => key.startsWith('result:') || key.startsWith('help:'))
+  if (notifications.length > 0) {
+    return notifications.sort((a, b) => new Date(a[1].receivedAt).getTime() - new Date(b[1].receivedAt).getTime())[0]
+  }
+
+  return entries
+    .filter(([key]) => !key.startsWith('result:') && !key.startsWith('help:'))
+    .sort((a, b) => {
+      const rankDiff = priorityRank(a[1].priority) - priorityRank(b[1].priority)
+      if (rankDiff !== 0) return rankDiff
+      return new Date(a[1].receivedAt).getTime() - new Date(b[1].receivedAt).getTime()
+    })[0]
+}
+
+export function queuePendingTask(
+  task: TaskDispatch & { threadHistory?: AampThreadEvent[]; threadContextText?: string },
+): boolean {
+  if (terminalTaskIds.has(task.taskId)) {
+    return false
+  }
+
+  pendingTasks.set(task.taskId, {
+    taskId: task.taskId,
+    from: task.from,
+    title: task.title,
+    bodyText: task.bodyText ?? '',
+    threadHistory: task.threadHistory ?? [],
+    threadContextText: task.threadContextText ?? '',
+    priority: task.priority ?? 'normal',
+    ...(task.expiresAt ? { expiresAt: task.expiresAt } : {}),
+    contextLinks: task.contextLinks ?? [],
+    messageId: task.messageId ?? '',
+    receivedAt: new Date().toISOString(),
+  })
+
+  if (hasExpired(pendingTasks.get(task.taskId)!)) {
+    pendingTasks.delete(task.taskId)
+    rememberTerminalTask(task.taskId)
+    return false
+  }
+
+  return true
+}
+
 // ─── Identity helpers ─────────────────────────────────────────────────────────
 
 interface Identity {
   email: string
-  jmapToken: string
+  mailboxToken?: string
   smtpPassword: string
 }
 
@@ -194,16 +409,27 @@ interface Identity {
  * human-readable prefix; a random hex suffix makes the email unique.
  * Callers should only call this once and persist the returned credentials.
  */
-async function registerNode(cfg: PluginConfig): Promise<Identity> {
+export async function registerNode(cfg: PluginConfig): Promise<Identity> {
   const slug = (cfg.slug ?? 'openclaw-agent')
     .toLowerCase()
     .replace(/[\s_]+/g, '-')
     .replace(/[^a-z0-9-]/g, '')
 
   const base = baseUrl(cfg.aampHost)
+  const discoveryRes = await fetch(`${base}/.well-known/aamp`)
+  if (!discoveryRes.ok) {
+    throw new Error(`AAMP discovery failed (${discoveryRes.status}): ${discoveryRes.statusText}`)
+  }
+  const discovery = (await discoveryRes.json()) as { api?: { url?: string } }
+  const apiUrl = discovery.api?.url
+  if (!apiUrl) {
+    throw new Error('AAMP discovery did not return api.url')
+  }
+
+  const apiBase = new URL(apiUrl, `${base}/`).toString()
 
   // Step 1: Self-register → get one-time registration code
-  const res = await fetch(`${base}/api/nodes/self-register`, {
+  const res = await fetch(`${apiBase}?action=aamp.mailbox.register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ slug, description: 'OpenClaw AAMP agent node' }),
@@ -221,7 +447,7 @@ async function registerNode(cfg: PluginConfig): Promise<Identity> {
 
   // Step 2: Exchange registration code for credentials
   const credRes = await fetch(
-    `${base}/api/nodes/credentials?code=${encodeURIComponent(regData.registrationCode)}`,
+    `${apiBase}?action=aamp.mailbox.credentials&code=${encodeURIComponent(regData.registrationCode)}`,
   )
 
   if (!credRes.ok) {
@@ -231,13 +457,13 @@ async function registerNode(cfg: PluginConfig): Promise<Identity> {
 
   const credData = (await credRes.json()) as {
     email: string
-    jmap: { token: string }
+    mailbox: { token: string }
     smtp: { password: string }
   }
 
   return {
     email: credData.email,
-    jmapToken: credData.jmap.token,
+    mailboxToken: credData.mailbox.token,
     smtpPassword: credData.smtp.password,
   }
 }
@@ -247,7 +473,7 @@ async function registerNode(cfg: PluginConfig): Promise<Identity> {
  *   1. Return cached credentials from disk if available.
  *   2. Otherwise register a new node and cache the result.
  */
-async function resolveIdentity(cfg: PluginConfig): Promise<Identity> {
+export async function resolveIdentity(cfg: PluginConfig): Promise<Identity> {
   const cached = loadCachedIdentity(cfg.credentialsFile ?? defaultCredentialsPath())
   if (cached) return cached
 
@@ -273,6 +499,18 @@ export default {
         type: 'string',
         default: 'openclaw-agent',
         description: 'Agent name prefix used in the mailbox address',
+      },
+      summary: {
+        type: 'string',
+        description: 'Directory summary shown when other agents search for this agent.',
+      },
+      cardText: {
+        type: 'string',
+        description: 'Inline card text used for automatic card.response replies.',
+      },
+      cardFile: {
+        type: 'string',
+        description: 'Absolute path to a card text file. Used when cardText is not set.',
       },
       credentialsFile: {
         type: 'string',
@@ -312,9 +550,9 @@ export default {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   register(api: any) {
-    // api.pluginConfig = the config block under plugins.entries["aamp-openclaw-plugin"].config in openclaw.json
-    // api.config      = the full global OpenClaw config (NOT our plugin's config)
-    const cfg = (api.pluginConfig ?? {}) as PluginConfig
+    // OpenClaw channel plugins keep runtime config under channels.<channelId>.
+    // Fall back to the legacy plugins.entries config so older installs still work.
+    const cfg = ((api.config?.channels?.aamp ?? api.pluginConfig ?? {}) as PluginConfig)
 
     // ── Register lightweight channel adapter to capture channelRuntime ──────────
     // We register as a channel SOLELY to get access to channelRuntime, which provides
@@ -361,12 +599,40 @@ export default {
       }
     }
 
+    function getConfiguredCardText(): string | undefined {
+      const inline = cfg.cardText?.trim()
+      if (inline) return inline
+
+      const file = cfg.cardFile?.trim()
+      if (!file) return undefined
+
+      const fromFile = readFileSync(file, 'utf-8').trim()
+      return fromFile || undefined
+    }
+
+    async function syncDirectoryProfile(): Promise<void> {
+      if (!aampClient) return
+
+      const summary = cfg.summary?.trim()
+      const cardText = getConfiguredCardText()
+      if (!summary && !cardText) return
+
+      await aampClient.updateDirectoryProfile({
+        ...(summary ? { summary } : {}),
+        ...(cardText ? { cardText } : {}),
+      })
+
+      api.logger.info(`[AAMP] Directory profile synced${cardText ? ' (card text registered)' : ''}`)
+    }
+
     function wakeAgentForPendingTask(task: PendingTask): void {
-      const fallback = () => triggerHeartbeatWake(currentSessionKey, `task ${task.taskId}`)
+      const fallbackSessionKey = buildAampWakeSessionKey('task', task.taskId)
+      const openClawSessionKey = buildAampTaskSessionKey(task.taskId, api.config)
+      const fallback = () => triggerHeartbeatWake(fallbackSessionKey, `task ${task.taskId}`)
       const dispatcher = channelRuntime?.reply?.dispatchReplyWithBufferedBlockDispatcher
 
       api.logger.info(
-        `[AAMP] Wake requested for task ${task.taskId} — channelRuntime=${channelRuntime ? 'yes' : 'no'} channelCfg=${channelCfg ? 'yes' : 'no'} dispatcher=${typeof dispatcher === 'function' ? 'yes' : 'no'} session=${currentSessionKey}`,
+        `[AAMP] Wake requested for task ${task.taskId} — channelRuntime=${channelRuntime ? 'yes' : 'no'} channelCfg=${channelCfg ? 'yes' : 'no'} dispatcher=${typeof dispatcher === 'function' ? 'yes' : 'no'} session=${openClawSessionKey} fallbackSession=${fallbackSessionKey}`,
       )
 
       if (!channelRuntime || !channelCfg || typeof dispatcher !== 'function') {
@@ -389,7 +655,7 @@ export default {
             BodyForAgent: prompt,
             From: task.from,
             To: agentEmail,
-            SessionKey: `aamp:default:task:${task.taskId}`,
+            SessionKey: openClawSessionKey,
             AccountId: 'default',
             ChatType: 'dm',
             Provider: 'aamp',
@@ -421,8 +687,20 @@ export default {
       }
     }
 
+    async function reconcileMailbox(includeHistorical: boolean): Promise<void> {
+      if (!aampClient) return
+
+      const opts = includeHistorical ? { includeHistorical: true } : undefined
+      const count = await aampClient.reconcileRecentEmails(100, opts)
+
+      if (includeHistorical && !historicalReconcileCompleted) {
+        historicalReconcileCompleted = true
+        api.logger.info(`[AAMP] Historical mailbox reconcile complete (${count} email(s) scanned)`)
+      }
+    }
+
     // ── Shared connect logic (used by service auto-connect and startup recovery) ──────
-    async function doConnect(identity: { email: string; jmapToken: string; smtpPassword: string }) {
+    async function doConnect(identity: { email: string; mailboxToken?: string; smtpPassword: string }) {
       if (reconcileTimer) {
         clearInterval(reconcileTimer)
         reconcileTimer = null
@@ -443,13 +721,10 @@ export default {
       // The management service proxies /jmap/* and /.well-known/jmap → Stalwart:8080.
       const base = baseUrl(cfg.aampHost)
 
-      aampClient = new AampClient({
+      aampClient = AampClient.fromMailboxIdentity({
         email: identity.email,
-        jmapToken: identity.jmapToken,
-        jmapUrl: base,
-        smtpHost: new URL(base).hostname,
-        smtpPort: 587,
         smtpPassword: identity.smtpPassword,
+        baseUrl: base,
         // Local/dev: management-service proxy uses plain HTTP, no TLS cert to verify.
         // Production: set to true when using wss:// with valid certs.
         rejectUnauthorized: false,
@@ -458,7 +733,13 @@ export default {
       aampClient.on('task.dispatch', (task: TaskDispatch) => {
         api.logger.info(`[AAMP] ← task.dispatch  ${task.taskId}  "${task.title}"  from=${task.from}`)
 
-        try {
+        void (async () => {
+          try {
+          if (terminalTaskIds.has(task.taskId)) {
+            api.logger.info(`[AAMP] Skipping already-terminal task ${task.taskId}`)
+            return
+          }
+
           // ── Sender policy / dispatch-context authorization ────────────────────
           const decision = matchSenderPolicy(task, cfg.senderPolicies)
           if (!decision.allowed) {
@@ -475,15 +756,22 @@ export default {
             return
           }
 
-          pendingTasks.set(task.taskId, {
-            taskId: task.taskId,
-            from: task.from,
-            title: task.title,
-            bodyText: task.bodyText ?? '',
-            contextLinks: task.contextLinks,
-            timeoutSecs: task.timeoutSecs,
-            messageId: task.messageId ?? '',
-            receivedAt: new Date().toISOString(),
+          const hydratedTask = await aampClient!.hydrateTaskDispatch(task).catch((err: Error) => {
+            api.logger.warn(`[AAMP] Failed to load thread history for ${task.taskId}: ${err.message}`)
+            return {
+              ...task,
+              threadHistory: [],
+              threadContextText: '',
+            }
+          })
+
+          if (!queuePendingTask(hydratedTask)) {
+            api.logger.info(`[AAMP] Ignoring already-terminal or expired task ${task.taskId}`)
+            return
+          }
+
+          void ensureTaskStream(pendingTasks.get(task.taskId)!).catch((err: Error) => {
+            api.logger.warn(`[AAMP] Failed to open stream for task ${task.taskId}: ${err.message}`)
           })
 
           // Wake the agent immediately after enqueueing the task.
@@ -493,13 +781,29 @@ export default {
         } catch (err) {
           api.logger.error(`[AAMP] task.dispatch handler failed for ${task.taskId}: ${(err as Error).message}`)
           if (pendingTasks.has(task.taskId)) {
-            triggerHeartbeatWake(currentSessionKey, `task ${task.taskId}`)
+            triggerHeartbeatWake(buildAampWakeSessionKey('task', task.taskId), `task ${task.taskId}`)
           }
+        }
+        })()
+      })
+
+      aampClient.on('task.cancel', (cancel: TaskCancel) => {
+        api.logger.info(`[AAMP] ← task.cancel  ${cancel.taskId}  from=${cancel.from}`)
+        const removed = pendingTasks.delete(cancel.taskId)
+        pendingTasks.delete(`result:${cancel.taskId}`)
+        pendingTasks.delete(`help:${cancel.taskId}`)
+        dispatchedSubtasks.delete(cancel.taskId)
+        waitingDispatches.delete(cancel.taskId)
+        rememberTerminalTask(cancel.taskId)
+        void closeTaskStream(cancel.taskId, { reason: 'task.cancel' }).catch(() => {})
+        if (removed) {
+          api.logger.info(`[AAMP] Cancelled task ${cancel.taskId} — removed from pending queue`)
         }
       })
 
       // ── Sub-task result: another agent completed a task we dispatched ──────
       aampClient.on('task.result', (result: TaskResult) => {
+        if (result.from.toLowerCase() === agentEmail.toLowerCase()) return
         api.logger.info(`[AAMP] ← task.result  ${result.taskId}  status=${result.status}  from=${result.from}`)
 
         const sub = dispatchedSubtasks.get(result.taskId)
@@ -562,8 +866,8 @@ export default {
             bodyText: result.status === 'completed'
               ? `Agent ${result.from} completed the sub-task.\n\nOutput:\n${truncatedOutput}${attachmentInfo}`
               : `Agent ${result.from} rejected the sub-task.\n\nReason: ${result.errorMsg ?? 'unknown'}`,
+            priority: 'urgent',
             contextLinks: [],
-            timeoutSecs: 0,
             messageId: '',
             receivedAt: new Date().toISOString(),
           })
@@ -585,7 +889,7 @@ export default {
                 BodyForAgent: prompt,
                 From: result.from,
                 To: agentEmail,
-                SessionKey: `aamp:default:${result.from}`,
+                SessionKey: buildAampConversationSessionKey(result.from, api.config),
                 AccountId: 'default',
                 ChatType: 'dm',
                 Provider: 'aamp',
@@ -612,7 +916,7 @@ export default {
               api.logger.error(`[AAMP] Channel dispatch failed: ${err.message}`)
             })
           } else {
-            const notifySessionKey = `agent:main:aamp-notify-${Date.now()}`
+            const notifySessionKey = buildAampWakeSessionKey('result', result.taskId)
             try {
               api.runtime.system.requestHeartbeatNow({ reason: 'wake', sessionKey: notifySessionKey })
               api.logger.info(`[AAMP] Heartbeat for sub-task result ${result.taskId}`)
@@ -625,9 +929,10 @@ export default {
         })
       })
 
-      // ── Sub-task help: another agent asks for clarification ─────────────────
-      aampClient.on('task.help', (help: TaskHelp) => {
-        api.logger.info(`[AAMP] ← task.help  ${help.taskId}  question="${help.question}"  from=${help.from}`)
+      // ── Sub-task help_needed: another agent asks for clarification ──────────
+      aampClient.on('task.help_needed', (help: TaskHelp) => {
+        if (help.from.toLowerCase() === agentEmail.toLowerCase()) return
+        api.logger.info(`[AAMP] ← task.help_needed  ${help.taskId}  question="${help.question}"  from=${help.from}`)
 
         // ── Synchronous dispatch: if aamp_dispatch_task is waiting, resolve it directly ──
         const waiter = waitingDispatches.get(help.taskId)
@@ -645,8 +950,8 @@ export default {
           from: help.from,
           title: `Sub-task needs help: ${sub?.title ?? help.taskId}`,
           bodyText: `Agent ${help.from} is asking for help on the sub-task.\n\nQuestion: ${help.question}\nBlocked reason: ${help.blockedReason}${help.suggestedOptions?.length ? `\nSuggested options: ${help.suggestedOptions.join(', ')}` : ''}`,
+          priority: 'urgent',
           contextLinks: [],
-          timeoutSecs: 0,
           messageId: '',
           receivedAt: new Date().toISOString(),
         })
@@ -661,7 +966,7 @@ export default {
               BodyForAgent: prompt,
               From: help.from,
               To: agentEmail,
-              SessionKey: `aamp:default:${help.from}`,
+              SessionKey: buildAampConversationSessionKey(help.from, api.config),
               AccountId: 'default',
               ChatType: 'dm',
               Provider: 'aamp',
@@ -687,7 +992,7 @@ export default {
             api.logger.error(`[AAMP] Channel dispatch failed for help: ${err.message}`)
           })
         } else {
-          const helpSessionKey = `agent:main:aamp-notify-${Date.now()}`
+          const helpSessionKey = buildAampWakeSessionKey('help', help.taskId)
           try {
             api.runtime.system.requestHeartbeatNow({ reason: 'wake', sessionKey: helpSessionKey })
             api.logger.info(`[AAMP] Heartbeat fallback for sub-task help ${help.taskId}`)
@@ -725,10 +1030,17 @@ export default {
           }
           return
         }
+        if (err.message.startsWith('Safety reconcile failed:') && isTransientTransportError(err.message)) {
+          api.logger.warn(`[AAMP] ${err.message}`)
+          return
+        }
         api.logger.error(`[AAMP] ${err.message}`)
       })
 
       await aampClient.connect()
+      await syncDirectoryProfile().catch((err: Error) => {
+        api.logger.warn(`[AAMP] Directory profile sync failed: ${err.message}`)
+      })
 
       api.logger.info(
         `[AAMP] Transport after connect — ${aampClient.isUsingPollingFallback() ? 'polling fallback' : 'websocket'} as ${agentEmail}`,
@@ -754,6 +1066,15 @@ export default {
         lastLoggedTransportMode = mode
       }, 1000)
 
+      void reconcileMailbox(!historicalReconcileCompleted).catch((err: Error) => {
+        lastConnectionError = err.message
+        if (!historicalReconcileCompleted) {
+          api.logger.warn(`[AAMP] Startup mailbox reconcile failed: ${err.message} (will retry historical tasks)`)
+        } else {
+          api.logger.warn(`[AAMP] Startup mailbox reconcile failed: ${err.message}`)
+        }
+      })
+
       transportMonitorTimer = setInterval(() => {
         if (!aampClient) return
         if (!aampClient.isConnected()) {
@@ -770,9 +1091,14 @@ export default {
 
       reconcileTimer = setInterval(() => {
         if (!aampClient) return
-        void aampClient.reconcileRecentEmails(20).catch((err: Error) => {
+        const includeHistorical = !historicalReconcileCompleted
+        void reconcileMailbox(includeHistorical).catch((err: Error) => {
           lastConnectionError = err.message
-          api.logger.warn(`[AAMP] Mailbox reconcile failed: ${err.message}`)
+          if (includeHistorical) {
+            api.logger.warn(`[AAMP] Mailbox reconcile failed while retrying historical tasks: ${err.message}`)
+          } else {
+            api.logger.warn(`[AAMP] Mailbox reconcile failed: ${err.message}`)
+          }
         })
       }, 15000)
     }
@@ -823,7 +1149,10 @@ export default {
       if (pendingTasks.size === 0) return
       api.logger.info(`[AAMP] gateway_start: re-triggering heartbeat for ${pendingTasks.size} pending task(s)`)
       try {
-        api.runtime.system.requestHeartbeatNow({ reason: 'wake', sessionKey: currentSessionKey })
+        api.runtime.system.requestHeartbeatNow({
+          reason: 'wake',
+          sessionKey: buildAampWakeSessionKey('queue', 'gateway-start'),
+        })
       } catch (err) {
         api.logger.warn(`[AAMP] gateway_start heartbeat failed: ${(err as Error).message}`)
       }
@@ -833,17 +1162,35 @@ export default {
     api.on(
       'before_prompt_build',
       (_event, ctx) => {
-        // Keep currentSessionKey fresh — used by task.dispatch to target the right session.
-        // Skip channel dispatch sessions (aamp:*) to avoid polluting the heartbeat session key.
-        if (ctx?.sessionKey && !String(ctx.sessionKey).startsWith('aamp:')) {
-          currentSessionKey = ctx.sessionKey
+        // Only AAMP-owned sessions should receive mailbox task context.
+        // This prevents regular user chats from inheriting pending email instructions.
+        if (!isAampSessionKey(ctx?.sessionKey)) {
+          return {}
         }
 
-        // Expire tasks that have exceeded their timeout
-        const now = Date.now()
+        // Expire tasks that have exceeded their dispatch expiry window.
         for (const [id, t] of pendingTasks) {
-          if (t.timeoutSecs && now - new Date(t.receivedAt).getTime() > t.timeoutSecs * 1000) {
-            api.logger.warn(`[AAMP] Task ${id} timed out — removing from queue`)
+          if (hasExpired(t)) {
+            if (!isSyntheticPendingKey(id) && aampClient?.isConnected()) {
+              void aampClient.sendResult({
+                to: t.from,
+                taskId: t.taskId,
+                status: 'rejected',
+                output: '',
+                errorMsg: t.expiresAt
+                  ? 'Task expired before the agent could complete it.'
+                  : 'Task timed out while waiting for agent completion or follow-up input.',
+                inReplyTo: t.messageId || undefined,
+              }).then(() => {
+                rememberTerminalTask(t.taskId)
+                api.logger.warn(`[AAMP] Task ${id} expired — sent rejected result to dispatcher`)
+              }).catch((err: Error) => {
+                api.logger.error(`[AAMP] Task ${id} expired — failed to notify dispatcher: ${err.message}`)
+              })
+            } else {
+              rememberTerminalTask(t.taskId)
+              api.logger.warn(`[AAMP] Task ${id} expired — removing from queue`)
+            }
             pendingTasks.delete(id)
           }
         }
@@ -853,14 +1200,9 @@ export default {
         // Prioritize notifications (sub-task results/help) over actionable tasks.
         // Without this, the oldest actionable task blocks notification delivery,
         // preventing the LLM from seeing sub-task results and completing the parent task.
-        const allEntries = [...pendingTasks.entries()]
-        const notifications = allEntries.filter(([key]) => key.startsWith('result:') || key.startsWith('help:'))
-        const actionable = allEntries.filter(([key]) => !key.startsWith('result:') && !key.startsWith('help:'))
-
-        // Pick notification first if available, otherwise oldest actionable task
-        const [taskKey, task] = notifications.length > 0
-          ? notifications.sort((a, b) => new Date(a[1].receivedAt).getTime() - new Date(b[1].receivedAt).getTime())[0]
-          : actionable.sort((a, b) => new Date(a[1].receivedAt).getTime() - new Date(b[1].receivedAt).getTime())[0]
+        const nextEntry = nextPendingEntry()
+        if (!nextEntry) return {}
+        const [taskKey, task] = nextEntry
 
         const isNotification = taskKey.startsWith('result:') || taskKey.startsWith('help:')
 
@@ -873,6 +1215,11 @@ export default {
         const actionableTasks = [...pendingTasks.entries()]
           .filter(([key]) => !key.startsWith('result:') && !key.startsWith('help:'))
           .map(([, t]) => t)
+          .sort((a, b) => {
+            const rankDiff = priorityRank(a.priority) - priorityRank(b.priority)
+            if (rankDiff !== 0) return rankDiff
+            return new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime()
+          })
 
         const hasAttachmentInfo = isNotification && (task.bodyText?.includes('aamp_download_attachment') ?? false)
         const actionRequiredSection = isNotification && actionableTasks.length > 0
@@ -884,7 +1231,7 @@ export default {
               `Use the sub-task result above to complete them by calling aamp_send_result.`,
               ``,
               ...actionableTasks.map((t) =>
-                `- Task ID: ${t.taskId} | From: ${t.from} | Title: "${t.title}"`
+                `- [${t.priority}] Task ID: ${t.taskId} | From: ${t.from} | Title: "${t.title}"`
               ),
               ...(hasAttachmentInfo ? [
                 ``,
@@ -904,6 +1251,7 @@ export default {
           `If the sub-task included attachments, use aamp_download_attachment to fetch them.`,
           ``,
           `Task ID:  ${task.taskId}`,
+          `Priority: ${task.priority}`,
           `From:     ${task.from}`,
           `Title:    ${task.title}`,
           task.bodyText ? `\n${task.bodyText}` : '',
@@ -936,15 +1284,17 @@ export default {
           `### Sub-task dispatch rules:`,
           `If you delegate work to another agent via aamp_dispatch_task, you MUST pass`,
           `parentTaskId: "${task.taskId}" to establish the parent-child relationship.`,
+          `If you need to find a suitable agent first, call aamp_directory_search.`,
           ``,
           `Task ID:  ${task.taskId}`,
           `From:     ${task.from}`,
           `Title:    ${task.title}`,
+          task.threadContextText ? `${task.threadContextText}` : '',
           task.bodyText ? `Description:\n${task.bodyText}` : '',
           task.contextLinks.length
             ? `Context Links:\n${task.contextLinks.map((l) => `  - ${l}`).join('\n')}`
             : '',
-          task.timeoutSecs ? `Deadline: ${task.timeoutSecs}s from dispatch` : `Deadline: none`,
+          task.expiresAt ? `Expires: ${task.expiresAt}` : `Expires: none`,
           `Received: ${task.receivedAt}`,
           pendingTasks.size > 1 ? `\n(+${pendingTasks.size - 1} more tasks queued)` : '',
         ]
@@ -957,6 +1307,52 @@ export default {
     )
 
     // ── 3. Tool: send task result ─────────────────────────────────────────────
+    api.registerTool({
+      name: 'aamp_directory_search',
+      description:
+        'Search the AAMP directory for agents by capability summary, card text, or email address.',
+      parameters: {
+        type: 'object',
+        required: ['query'],
+        properties: {
+          query: { type: 'string', description: 'Capability or keyword to search for' },
+          limit: { type: 'number', description: 'Maximum number of matches to return (default: 10)' },
+          includeSelf: { type: 'boolean', description: 'Whether to include the current agent in results' },
+        },
+      },
+      execute: async (_id, params) => {
+        if (!aampClient) {
+          return { content: [{ type: 'text', text: 'Error: AAMP client is not connected.' }] }
+        }
+
+        const query = String((params as { query?: string }).query ?? '').trim()
+        if (!query) {
+          return { content: [{ type: 'text', text: 'Error: query is required.' }] }
+        }
+
+        const agents = await aampClient.searchDirectory({
+          query,
+          limit: Number((params as { limit?: number }).limit ?? 10),
+          includeSelf: Boolean((params as { includeSelf?: boolean }).includeSelf),
+        })
+
+        if (!agents.length) {
+          return { content: [{ type: 'text', text: `No agents matched "${query}".` }] }
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: agents
+              .map((agent, index) =>
+                `${index + 1}. ${agent.email}${agent.summary ? ` — ${agent.summary}` : ''}`,
+              )
+              .join('\n'),
+          }],
+        }
+      },
+    }, { name: 'aamp_directory_search' })
+
     api.registerTool({
       name: 'aamp_send_result',
       description:
@@ -998,7 +1394,7 @@ export default {
           },
           structuredResult: {
             type: 'array',
-            description: 'Optional structured workflow field values.',
+            description: 'Optional structured Meego field values.',
             items: {
               type: 'object',
               required: ['fieldKey', 'fieldTypeKey'],
@@ -1007,7 +1403,7 @@ export default {
                 fieldTypeKey: { type: 'string' },
                 fieldAlias: { type: 'string' },
                 value: {
-                  description: 'Field value in the exact format required by the target workflow field type.',
+                  description: 'Field value in the exact format required by Meego for this field type.',
                 },
                 index: { type: 'string' },
                 attachmentFilenames: {
@@ -1071,6 +1467,19 @@ export default {
           }))
         }
 
+        await appendTaskStream(task.taskId, 'status', {
+          state: 'completing',
+          label: `Sending ${p.status} result`,
+        })
+        if (p.output) {
+          await appendTaskStream(task.taskId, 'text.delta', { text: p.output })
+        }
+        await closeTaskStream(task.taskId, {
+          reason: 'task.result',
+          status: p.status,
+          ...(p.errorMsg ? { error: p.errorMsg } : {}),
+        })
+
         await aampClient.sendResult({
           to: task.from,
           taskId: task.taskId,
@@ -1083,12 +1492,16 @@ export default {
         })
 
         pendingTasks.delete(task.taskId)
+        rememberTerminalTask(task.taskId)
         api.logger.info(`[AAMP] → task.result  ${task.taskId}  ${p.status}`)
 
         // If more tasks remain, wake the agent to process them
         if (pendingTasks.size > 0) {
           try {
-            api.runtime.system.requestHeartbeatNow({ reason: 'wake', sessionKey: currentSessionKey })
+            api.runtime.system.requestHeartbeatNow({
+              reason: 'wake',
+              sessionKey: buildAampWakeSessionKey('queue', 'follow-up'),
+            })
           } catch { /* ignore */ }
         }
 
@@ -1151,6 +1564,14 @@ export default {
           return { content: [{ type: 'text', text: 'Error: AAMP client is not connected.' }] }
         }
 
+        await appendTaskStream(task.taskId, 'status', {
+          state: 'help_needed',
+          label: p.blockedReason,
+        })
+        await closeTaskStream(task.taskId, {
+          reason: 'task.help_needed',
+        })
+
         await aampClient.sendHelp({
           to: task.from,
           taskId: task.taskId,
@@ -1160,7 +1581,7 @@ export default {
           inReplyTo: task.messageId || undefined,
         })
 
-        api.logger.info(`[AAMP] → task.help  ${task.taskId}`)
+        api.logger.info(`[AAMP] → task.help_needed  ${task.taskId}`)
 
         // Keep the task in pending — the help reply may arrive later
         return {
@@ -1185,10 +1606,14 @@ export default {
         }
 
         const lines = [...pendingTasks.values()]
-          .sort((a, b) => new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime())
+          .sort((a, b) => {
+            const rankDiff = priorityRank(a.priority) - priorityRank(b.priority)
+            if (rankDiff !== 0) return rankDiff
+            return new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime()
+          })
           .map(
             (t, i) =>
-              `${i + 1}. [${t.taskId}] "${t.title}"${t.bodyText ? `\n   Description: ${t.bodyText}` : ''} — from ${t.from} (received ${t.receivedAt})`,
+              `${i + 1}. [${t.priority}] [${t.taskId}] "${t.title}"${t.bodyText ? `\n   Description: ${t.bodyText}` : ''} — from ${t.from} (received ${t.receivedAt})`,
           )
 
         return {
@@ -1202,9 +1627,46 @@ export default {
       },
     }, { name: 'aamp_pending_tasks' })
 
+    api.registerTool({
+      name: 'aamp_cancel_task',
+      description: 'Cancel a pending AAMP task and notify the dispatcher.',
+      parameters: {
+        type: 'object',
+        required: ['taskId'],
+        properties: {
+          taskId: { type: 'string', description: 'The AAMP task ID to cancel.' },
+          bodyText: { type: 'string', description: 'Optional cancellation note sent in the email body.' },
+        },
+      },
+      execute: async (_id, params) => {
+        const p = params as { taskId: string; bodyText?: string }
+        const task = pendingTasks.get(p.taskId)
+        if (!task) {
+          return { content: [{ type: 'text', text: `Error: task ${p.taskId} not found in pending queue.` }] }
+        }
+        if (!aampClient?.isConnected()) {
+          return { content: [{ type: 'text', text: 'Error: AAMP client is not connected.' }] }
+        }
+
+        await aampClient.sendCancel({
+          to: task.from,
+          taskId: task.taskId,
+          bodyText: p.bodyText,
+          inReplyTo: task.messageId || undefined,
+        })
+
+        pendingTasks.delete(task.taskId)
+        rememberTerminalTask(task.taskId)
+        api.logger.info(`[AAMP] → task.cancel  ${task.taskId}`)
+        return {
+          content: [{ type: 'text', text: `Cancellation sent for task ${task.taskId}.` }],
+        }
+      },
+    }, { name: 'aamp_cancel_task' })
+
     // ── 6. Tool: dispatch task to another agent (SYNCHRONOUS) ───────────────────
     // Sends the task and BLOCKS until the sub-agent replies with task.result or
-    // task.help. The reply is returned directly as the tool result, keeping the
+    // task.help_needed. The reply is returned directly as the tool result, keeping the
     // LLM awake with full context — no heartbeat/channel dispatch needed.
     api.registerTool({
       name: 'aamp_dispatch_task',
@@ -1220,7 +1682,8 @@ export default {
           title: { type: 'string', description: 'Task title (concise summary)' },
           bodyText: { type: 'string', description: 'Detailed task description' },
           parentTaskId: { type: 'string', description: 'If you are processing a pending AAMP task, pass its Task ID here to establish parent-child nesting. Omit for top-level tasks.' },
-          timeoutSecs: { type: 'number', description: 'Timeout in seconds (optional)' },
+          priority: { type: 'string', enum: ['urgent', 'high', 'normal'], description: 'Task priority (optional)' },
+          expiresAt: { type: 'string', description: 'Absolute expiry time in ISO 8601 format (optional)' },
           contextLinks: {
             type: 'array', items: { type: 'string' },
             description: 'URLs providing context (optional)',
@@ -1242,7 +1705,7 @@ export default {
       },
       execute: async (_id: unknown, params: {
         to: string; title: string; bodyText?: string;
-        parentTaskId?: string; timeoutSecs?: number; contextLinks?: string[];
+        parentTaskId?: string; priority?: TaskPriority; expiresAt?: string; contextLinks?: string[];
         attachments?: Array<{ filename: string; contentType?: string; path: string }>
       }) => {
         if (!aampClient?.isConnected()) {
@@ -1264,7 +1727,8 @@ export default {
             to: params.to,
             title: params.title,
             parentTaskId: params.parentTaskId,
-            timeoutSecs: params.timeoutSecs,
+            priority: params.priority,
+            expiresAt: params.expiresAt,
             contextLinks: params.contextLinks,
             attachments,
           })
@@ -1280,12 +1744,18 @@ export default {
           api.logger.info(`[AAMP] → task.dispatch  ${result.taskId}  to=${params.to}  parent=${params.parentTaskId ?? 'none'}  (waiting for reply…)`)
 
           // ── SYNCHRONOUS WAIT: block until sub-agent replies ──────────────
-          const timeoutMs = (params.timeoutSecs ?? 300) * 1000
+          const timeoutMs = params.expiresAt
+            ? Math.max(new Date(params.expiresAt).getTime() - Date.now(), 1)
+            : 300 * 1000
           const reply = await new Promise<{ type: 'result' | 'help'; data: unknown }>((resolve, reject) => {
             waitingDispatches.set(result.taskId, resolve)
             setTimeout(() => {
               if (waitingDispatches.delete(result.taskId)) {
-                reject(new Error(`Sub-task ${result.taskId} timed out after ${params.timeoutSecs ?? 300}s`))
+                reject(new Error(
+                  params.expiresAt
+                    ? `Sub-task ${result.taskId} expired before a reply was received`
+                    : `Sub-task ${result.taskId} timed out after 300s`,
+                ))
               }
             }, timeoutMs)
           })
@@ -1383,7 +1853,13 @@ export default {
           return { content: [{ type: 'text', text: 'Error: email parameter is required' }] }
         }
         try {
-          const res = await fetch(`${base}/api/aamp-check?email=${encodeURIComponent(email)}`)
+          const discoveryRes = await fetch(`${base}/.well-known/aamp`)
+          if (!discoveryRes.ok) throw new Error(`HTTP ${discoveryRes.status}`)
+          const discovery = await discoveryRes.json() as { api?: { url?: string } }
+          const apiUrl = discovery.api?.url
+          if (!apiUrl) throw new Error('AAMP discovery did not return api.url')
+          const apiBase = new URL(apiUrl, `${base}/`).toString()
+          const res = await fetch(`${apiBase}?action=aamp.mailbox.check&email=${encodeURIComponent(email)}`)
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           const data = await res.json() as { aamp: boolean; domain?: string }
           return {

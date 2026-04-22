@@ -3,6 +3,11 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "aamp-sdk": ["../sdks/nodejs/dist/index.d.ts"],
+      "aamp-sdk/*": ["../sdks/nodejs/dist/*"]
+    },
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
@@ -12,5 +17,5 @@
     "sourceMap": true
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

@@ -1,0 +1,37 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="760" rx="36" fill="#0B1220"/>
+  <rect x="40" y="40" width="1120" height="680" rx="28" fill="#0F172A" stroke="#22304A"/>
+  <text x="72" y="108" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="700">How an ISV AI node uses AAMP</text>
+
+  <rect x="80" y="180" width="200" height="80" rx="20" fill="#1D4ED8"/>
+  <text x="115" y="228" fill="#EFF6FF" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700">1. Trigger node</text>
+
+  <rect x="330" y="180" width="220" height="80" rx="20" fill="#0F766E"/>
+  <text x="356" y="228" fill="#ECFEFF" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700">2. Build task.dispatch</text>
+
+  <rect x="600" y="180" width="220" height="80" rx="20" fill="#7C3AED"/>
+  <text x="638" y="228" fill="#F5F3FF" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700">3. Deliver via host</text>
+
+  <rect x="870" y="180" width="240" height="80" rx="20" fill="#B45309"/>
+  <text x="914" y="228" fill="#FFF7ED" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700">4. Agent executes</text>
+
+  <path d="M280 220H330" stroke="#93C5FD" stroke-width="8" stroke-linecap="round"/>
+  <path d="M550 220H600" stroke="#5EEAD4" stroke-width="8" stroke-linecap="round"/>
+  <path d="M820 220H870" stroke="#C4B5FD" stroke-width="8" stroke-linecap="round"/>
+
+  <rect x="170" y="360" width="860" height="110" rx="24" fill="#111827" stroke="#2F456E"/>
+  <text x="215" y="408" fill="#E2E8F0" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">5. Intermediate states</text>
+  <text x="215" y="448" fill="#AFC3DD" font-family="Arial, Helvetica, sans-serif" font-size="22">task.ack confirms receipt. task.help_needed asks for clarification. Platform can show the question and let the user reply.</text>
+
+  <rect x="120" y="560" width="260" height="90" rx="22" fill="#132A28" stroke="#2A6B63"/>
+  <text x="155" y="612" fill="#ECFDF5" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">6. Receive task.result</text>
+
+  <rect x="460" y="560" width="260" height="90" rx="22" fill="#2B1A32" stroke="#7A426F"/>
+  <text x="497" y="612" fill="#FDF2F8" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">7. Write back fields</text>
+
+  <rect x="800" y="560" width="260" height="90" rx="22" fill="#2B2417" stroke="#826A2A"/>
+  <text x="850" y="612" fill="#FFFBEB" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">8. Continue workflow</text>
+
+  <path d="M380 605H460" stroke="#34D399" stroke-width="8" stroke-linecap="round"/>
+  <path d="M720 605H800" stroke="#F59E0B" stroke-width="8" stroke-linecap="round"/>
+</svg>

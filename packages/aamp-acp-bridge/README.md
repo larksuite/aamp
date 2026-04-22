@@ -24,6 +24,28 @@ npx aamp-acp-bridge start --config bridge.json
 
 By default, agent credentials are stored under `~/.acp-bridge/`.
 
+The bridge understands these task lifecycle intents:
+
+- `task.dispatch`
+- `task.stream.opened`
+- `task.help_needed`
+- `task.result`
+- `task.cancel`
+
+Dispatch tasks can also carry:
+
+- `priority`: `urgent | high | normal`
+- `expiresAt`: an ISO-8601 timestamp after which the task should no longer run
+
+If a `task.cancel` arrives before the ACP agent returns a final answer, the bridge suppresses any later result send for that task.
+
+While ACP execution is in progress, the bridge can:
+
+- create an AAMP task stream for the task
+- send `task.stream.opened`
+- append `status`, `progress`, and `text.delta` events
+- close the stream before the authoritative `task.result` or `task.help_needed`
+
 ## Config
 
 Minimal example:

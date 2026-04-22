@@ -1,4 +1,4 @@
-import { AampClient, type TaskDispatch, type AampAttachment } from 'aamp-sdk'
+import { AampClient, type TaskDispatch, type AampAttachment, type TaskCancel } from 'aamp-sdk'
 import { AcpxClient } from './acpx-client.js'
 import { buildPrompt, parseResponse } from './prompt-builder.js'
 import type { AgentConfig } from './config.js'
@@ -8,7 +8,7 @@ import { basename, dirname, join } from 'node:path'
 
 export interface AgentIdentity {
   email: string
-  jmapToken: string
+  mailboxToken: string
   smtpPassword: string
 }
 
@@ -36,6 +36,7 @@ export class AgentBridge {
   private processing = false
   private pollingFallback = false
   private transportMode: 'connecting' | 'websocket' | 'polling' | 'disconnected' = 'connecting'
+  private cancelledTaskIds = new Set<string>()
 
   constructor(
     private readonly agentConfig: AgentConfig,
@@ -52,6 +53,35 @@ export class AgentBridge {
   get isUsingPollingFallback(): boolean { return this.pollingFallback || (this.client?.isUsingPollingFallback() ?? false) }
   get isBusy(): boolean { return this.processing }
 
+  private getConfiguredCardText(): string | undefined {
+    const inline = this.agentConfig.cardText?.trim()
+    if (inline) return inline
+
+    const file = this.agentConfig.cardFile?.trim()
+    if (!file) return undefined
+
+    const fromFile = readFileSync(file, 'utf-8').trim()
+    return fromFile || undefined
+  }
+
+  private async syncDirectoryProfile(): Promise<void> {
+    if (!this.client) return
+
+    const summary = this.agentConfig.summary?.trim() || this.agentConfig.description?.trim()
+    const cardText = this.getConfiguredCardText()
+
+    if (!summary && !cardText) return
+
+    await this.client.updateDirectoryProfile({
+      ...(summary ? { summary } : {}),
+      ...(cardText ? { cardText } : {}),
+    })
+
+    console.log(
+      `[${this.name}] Directory profile synced${cardText ? ' (card text registered)' : ''}`,
+    )
+  }
+
   /**
    * Start the bridge: resolve identity → connect AAMP → ensure ACP session.
    */
@@ -61,26 +91,27 @@ export class AgentBridge {
     console.log(`[${this.name}] AAMP identity: ${this.identity.email}`)
 
     // 2. Create AAMP client
-    const smtpUrl = new URL(this.aampHost)
-    this.client = new AampClient({
+    this.client = AampClient.fromMailboxIdentity({
       email: this.identity.email,
-      jmapToken: this.identity.jmapToken,
-      jmapUrl: this.aampHost,
-      smtpHost: smtpUrl.hostname,
-      smtpPort: 587,
       smtpPassword: this.identity.smtpPassword,
+      baseUrl: this.aampHost,
       rejectUnauthorized: this.rejectUnauthorized,
     })
+    const client = this.client
 
     // 3. Wire up task handler
-    this.client.on('task.dispatch', (task: TaskDispatch) => {
+    client.on('task.dispatch', (task: TaskDispatch) => {
       this.handleTask(task).catch((err) => {
         console.error(`[${this.name}] Task ${task.taskId} failed: ${(err as Error).message}`)
       })
     })
 
-    this.client.on('connected', () => {
-      const usingPollingFallback = this.client?.isUsingPollingFallback() ?? false
+    client.on('task.cancel', (task: TaskCancel) => {
+      this.handleCancel(task)
+    })
+
+    client.on('connected', () => {
+      const usingPollingFallback = client.isUsingPollingFallback()
       this.pollingFallback = usingPollingFallback
       if (usingPollingFallback) {
         if (this.transportMode !== 'polling') {
@@ -98,8 +129,8 @@ export class AgentBridge {
       }
     })
 
-    this.client.on('disconnected', (reason: string) => {
-      const usingPollingFallback = this.client?.isUsingPollingFallback() ?? false
+    client.on('disconnected', (reason: string) => {
+      const usingPollingFallback = client.isUsingPollingFallback()
       this.pollingFallback = usingPollingFallback
       if (usingPollingFallback) {
         if (this.transportMode !== 'polling') {
@@ -112,7 +143,7 @@ export class AgentBridge {
       }
     })
 
-    this.client.on('error', (err: Error) => {
+    client.on('error', (err: Error) => {
       if (err.message.includes('falling back to polling')) {
         this.pollingFallback = true
         if (this.transportMode !== 'polling') {
@@ -132,7 +163,10 @@ export class AgentBridge {
     })
 
     // 4. Connect to AAMP
-    await this.client.connect()
+    await client.connect()
+    await this.syncDirectoryProfile().catch((err) => {
+      console.warn(`[${this.name}] Directory profile sync failed: ${(err as Error).message}`)
+    })
 
     // 5. Ensure ACP session
     try {
@@ -170,6 +204,16 @@ export class AgentBridge {
 
     console.log(`[${this.name}] <- task.dispatch  ${task.taskId}  "${task.title}"  from=${task.from}`)
 
+    if (task.expiresAt && new Date(task.expiresAt).getTime() <= Date.now()) {
+      console.warn(`[${this.name}] Skipping expired task ${task.taskId}`)
+      return
+    }
+
+    if (this.cancelledTaskIds.has(task.taskId)) {
+      console.warn(`[${this.name}] Ignoring cancelled task ${task.taskId}`)
+      return
+    }
+
     if (!this.isSenderAllowed(task.from)) {
       console.warn(
         `[${this.name}] Rejecting task ${task.taskId} from non-whitelisted sender: ${task.from}`,
@@ -186,14 +230,63 @@ export class AgentBridge {
     }
 
     this.processing = true
+    let activeStream: Awaited<ReturnType<AampClient['createStream']>> | null = null
 
     try {
-      const prompt = buildPrompt(task)
+      activeStream = await this.client.createStream({
+        taskId: task.taskId,
+        peerEmail: task.from,
+      })
+      await this.client.sendStreamOpened({
+        to: task.from,
+        taskId: task.taskId,
+        streamId: activeStream.streamId,
+        inReplyTo: task.messageId,
+      })
+      await this.client.appendStreamEvent({
+        streamId: activeStream.streamId,
+        type: 'status',
+        payload: { state: 'running', label: 'ACP task started' },
+      })
+
+      const hydratedTask = await this.client.hydrateTaskDispatch(task).catch((err) => {
+        console.warn(`[${this.name}] Failed to load thread history for ${task.taskId}: ${(err as Error).message}`)
+        return {
+          ...task,
+          threadHistory: [],
+          threadContextText: '',
+        }
+      })
+
+      const prompt = buildPrompt(hydratedTask, hydratedTask.threadContextText)
+      await this.client.appendStreamEvent({
+        streamId: activeStream.streamId,
+        type: 'progress',
+        payload: { value: 0.2, label: 'Prompt sent to ACP agent' },
+      })
       const result = await this.acpx.prompt(this.agentConfig.acpCommand, this.sessionName, prompt)
+      if (this.cancelledTaskIds.has(task.taskId)) {
+        console.warn(`[${this.name}] Dropping task ${task.taskId} result because the task was cancelled`)
+        return
+      }
+      await this.client.appendStreamEvent({
+        streamId: activeStream.streamId,
+        type: 'progress',
+        payload: { value: 0.8, label: 'ACP response received' },
+      })
       const parsed = parseResponse(result.output)
 
       if (parsed.isHelp) {
         // Agent needs help
+        await this.client.appendStreamEvent({
+          streamId: activeStream.streamId,
+          type: 'status',
+          payload: { state: 'help_needed', label: parsed.question ?? 'Agent requested clarification' },
+        })
+        await this.client.closeStream({
+          streamId: activeStream.streamId,
+          payload: { reason: 'task.help_needed' },
+        })
         await this.client.sendHelp({
           to: task.from,
           taskId: task.taskId,
@@ -202,7 +295,7 @@ export class AgentBridge {
           suggestedOptions: [],
           inReplyTo: task.messageId,
         })
-        console.log(`[${this.name}] -> task.help  ${task.taskId}`)
+        console.log(`[${this.name}] -> task.help_needed  ${task.taskId}`)
       } else {
         // Collect file attachments referenced by the agent
         const attachments: AampAttachment[] = []
@@ -222,6 +315,17 @@ export class AgentBridge {
         }
 
         // Task completed
+        if (parsed.output) {
+          await this.client.appendStreamEvent({
+            streamId: activeStream.streamId,
+            type: 'text.delta',
+            payload: { text: parsed.output },
+          })
+        }
+        await this.client.closeStream({
+          streamId: activeStream.streamId,
+          payload: { reason: 'task.result', status: 'completed' },
+        })
         await this.client.sendResult({
           to: task.from,
           taskId: task.taskId,
@@ -236,6 +340,12 @@ export class AgentBridge {
       const errorMsg = (err as Error).message
       console.error(`[${this.name}] Task ${task.taskId} error: ${errorMsg}`)
       try {
+        if (activeStream) {
+          await this.client.closeStream({
+            streamId: activeStream.streamId,
+            payload: { reason: 'task.result', status: 'rejected', error: errorMsg },
+          })
+        }
         await this.client.sendResult({
           to: task.from,
           taskId: task.taskId,
@@ -250,6 +360,11 @@ export class AgentBridge {
     }
   }
 
+  private handleCancel(task: TaskCancel): void {
+    this.cancelledTaskIds.add(task.taskId)
+    console.warn(`[${this.name}] <- task.cancel  ${task.taskId}  from=${task.from}`)
+  }
+
   /**
    * Resolve AAMP identity: load from credentials file or register new.
    */
@@ -260,8 +375,12 @@ export class AgentBridge {
     if (existsSync(credFile)) {
       try {
         const data = JSON.parse(readFileSync(credFile, 'utf-8'))
-        if (data.email && data.jmapToken && data.smtpPassword) {
-          return data as AgentIdentity
+        if (data.email && data.mailboxToken && data.smtpPassword) {
+          return {
+            email: data.email,
+            mailboxToken: data.mailboxToken,
+            smtpPassword: data.smtpPassword,
+          }
         }
       } catch { /* re-register */ }
     }
@@ -270,8 +389,15 @@ export class AgentBridge {
     const slug = this.agentConfig.slug ?? `${this.agentConfig.name}-bridge`
     const description = this.agentConfig.description ?? `${this.agentConfig.name} via ACP bridge`
 
+    const discoveryRes = await fetch(`${this.aampHost}/.well-known/aamp`)
+    if (!discoveryRes.ok) throw new Error(`AAMP discovery failed: ${discoveryRes.status}`)
+    const discovery = await discoveryRes.json() as { api?: { url?: string } }
+    const apiUrl = discovery.api?.url
+    if (!apiUrl) throw new Error('AAMP discovery did not return api.url')
+    const apiBase = new URL(apiUrl, `${this.aampHost}/`).toString()
+
     // Step 1: Register
-    const regRes = await fetch(`${this.aampHost}/api/nodes/self-register`, {
+    const regRes = await fetch(`${apiBase}?action=aamp.mailbox.register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ slug, description }),
@@ -280,13 +406,13 @@ export class AgentBridge {
     const regData = await regRes.json() as { registrationCode: string; email: string }
 
     // Step 2: Exchange code for credentials
-    const credRes = await fetch(`${this.aampHost}/api/nodes/credentials?code=${regData.registrationCode}`)
+    const credRes = await fetch(`${apiBase}?action=aamp.mailbox.credentials&code=${encodeURIComponent(regData.registrationCode)}`)
     if (!credRes.ok) throw new Error(`Credential exchange failed: ${credRes.status}`)
-    const creds = await credRes.json() as { email: string; jmap: { token: string }; smtp: { password: string } }
+    const creds = await credRes.json() as { email: string; mailbox: { token: string }; smtp: { password: string } }
 
     const identity: AgentIdentity = {
       email: creds.email,
-      jmapToken: creds.jmap.token,
+      mailboxToken: creds.mailbox.token,
       smtpPassword: creds.smtp.password,
     }
 

@@ -7,9 +7,87 @@
  * Headers are case-insensitive; we normalize to lowercase for lookup.
  */
 
-import { AAMP_HEADER, type AampMessage, type TaskDispatch, type TaskResult, type TaskHelp, type TaskAck } from './types.js'
+import {
+  AAMP_HEADER,
+  AAMP_PROTOCOL_VERSION,
+  type AampMessage,
+  type TaskDispatch,
+  type TaskCancel,
+  type TaskResult,
+  type TaskHelp,
+  type TaskAck,
+  type TaskStreamOpened,
+  type CardQuery,
+  type CardResponse,
+} from './types.js'
 
 type RawHeaders = Record<string, string | string[]>
+
+function normalizeBodyText(value?: string): string {
+  return value?.replace(/\r\n/g, '\n').trim() ?? ''
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function extractBodySection(bodyText: string, label: string, nextLabels: string[]): string {
+  if (!bodyText) return ''
+  const nextPattern = nextLabels.length
+    ? `(?=\\n(?:${nextLabels.map(escapeRegex).join('|')}):|$)`
+    : '$'
+  const pattern = new RegExp(
+    `(?:^|\\n)${escapeRegex(label)}:\\s*([\\s\\S]*?)${nextPattern}`,
+    'i',
+  )
+  const match = pattern.exec(bodyText)
+  return match?.[1]?.trim() ?? ''
+}
+
+function parseSuggestedOptionsBlock(block: string): string[] {
+  if (!block.trim()) return []
+  return block
+    .split('\n')
+    .map((line) => line.replace(/^\s*(?:[-*]|\d+\.)\s*/, '').trim())
+    .filter(Boolean)
+}
+
+function parseTaskResultBody(bodyText?: string): { output: string; errorMsg?: string } {
+  const normalized = normalizeBodyText(bodyText)
+  if (!normalized) return { output: '' }
+
+  const output = extractBodySection(normalized, 'Output', ['Error'])
+  const errorMsg = extractBodySection(normalized, 'Error', [])
+
+  if (output || errorMsg) {
+    return { output, ...(errorMsg ? { errorMsg } : {}) }
+  }
+
+  return { output: normalized }
+}
+
+function parseTaskHelpBody(bodyText?: string): {
+  question: string
+  blockedReason: string
+  suggestedOptions: string[]
+} {
+  const normalized = normalizeBodyText(bodyText)
+  if (!normalized) {
+    return { question: '', blockedReason: '', suggestedOptions: [] }
+  }
+
+  const question = extractBodySection(normalized, 'Question', ['Blocked reason', 'Suggested options'])
+  const blockedReason = extractBodySection(normalized, 'Blocked reason', ['Suggested options'])
+  const suggestedOptions = parseSuggestedOptionsBlock(
+    extractBodySection(normalized, 'Suggested options', []),
+  )
+
+  if (question || blockedReason || suggestedOptions.length) {
+    return { question, blockedReason, suggestedOptions }
+  }
+
+  return { question: normalized, blockedReason: '', suggestedOptions: [] }
+}
 
 function decodeMimeEncodedWordSegment(segment: string): string {
   const match = /^=\?([^?]+)\?([bBqQ])\?([^?]*)\?=$/.exec(segment)
@@ -133,6 +211,7 @@ export interface EmailMetadata {
   messageId: string
   subject: string
   headers: RawHeaders
+  bodyText?: string
 }
 
 /**
@@ -146,6 +225,7 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
 
   const intent = getAampHeader(headers, AAMP_HEADER.INTENT)
   const taskId = getAampHeader(headers, AAMP_HEADER.TASK_ID)
+  const protocolVersion = getAampHeader(headers, AAMP_HEADER.VERSION) ?? AAMP_PROTOCOL_VERSION
 
   if (!intent || !taskId) return null
 
@@ -154,19 +234,22 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
   const decodedSubject = decodeMimeEncodedWords(meta.subject)
 
   if (intent === 'task.dispatch') {
-    const timeoutStr = getAampHeader(headers, AAMP_HEADER.TIMEOUT) ?? '300'
     const contextLinksStr = getAampHeader(headers, AAMP_HEADER.CONTEXT_LINKS) ?? ''
     const dispatchContext = parseDispatchContextHeader(
       getAampHeader(headers, AAMP_HEADER.DISPATCH_CONTEXT),
     )
 
     const parentTaskId = getAampHeader(headers, AAMP_HEADER.PARENT_TASK_ID)
+    const priority = (getAampHeader(headers, AAMP_HEADER.PRIORITY) ?? 'normal') as TaskDispatch['priority']
+    const expiresAt = getAampHeader(headers, AAMP_HEADER.EXPIRES_AT)
 
     const dispatch: TaskDispatch = {
+      protocolVersion,
       intent: 'task.dispatch',
       taskId,
       title: decodedSubject.replace(/^\[AAMP Task\]\s*/, '').trim() || 'Untitled Task',
-      timeoutSecs: parseInt(timeoutStr, 10) || 300,
+      priority: priority === 'urgent' || priority === 'high' ? priority : 'normal',
+      ...(expiresAt ? { expiresAt } : {}),
       contextLinks: contextLinksStr
         ? contextLinksStr.split(',').map((s) => s.trim()).filter(Boolean)
         : [],
@@ -181,17 +264,33 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
     return dispatch
   }
 
+  if (intent === 'task.cancel') {
+    const cancel: TaskCancel = {
+      protocolVersion,
+      intent: 'task.cancel',
+      taskId,
+      from,
+      to,
+      messageId: meta.messageId,
+      subject: meta.subject,
+      bodyText: '',
+    }
+    return cancel
+  }
+
   if (intent === 'task.result') {
+    const parsedBody = parseTaskResultBody(meta.bodyText)
     const status = (getAampHeader(headers, AAMP_HEADER.STATUS) ?? 'completed') as
       | 'completed'
       | 'rejected'
-    const output = getAampHeader(headers, AAMP_HEADER.OUTPUT) ?? ''
-    const errorMsg = getAampHeader(headers, AAMP_HEADER.ERROR_MSG)
+    const output = getAampHeader(headers, AAMP_HEADER.OUTPUT) ?? parsedBody.output
+    const errorMsg = getAampHeader(headers, AAMP_HEADER.ERROR_MSG) ?? parsedBody.errorMsg
     const structuredResult = decodeStructuredResult(
       getAampHeader(headers, AAMP_HEADER.STRUCTURED_RESULT),
     )
 
     const result: TaskResult = {
+      protocolVersion,
       intent: 'task.result',
       taskId,
       status,
@@ -205,19 +304,21 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
     return result
   }
 
-  if (intent === 'task.help') {
-    const question = getAampHeader(headers, AAMP_HEADER.QUESTION) ?? ''
-    const blockedReason = getAampHeader(headers, AAMP_HEADER.BLOCKED_REASON) ?? ''
+  if (intent === 'task.help_needed') {
+    const parsedBody = parseTaskHelpBody(meta.bodyText)
+    const question = getAampHeader(headers, AAMP_HEADER.QUESTION) ?? parsedBody.question
+    const blockedReason = getAampHeader(headers, AAMP_HEADER.BLOCKED_REASON) ?? parsedBody.blockedReason
     const suggestedOptionsStr = getAampHeader(headers, AAMP_HEADER.SUGGESTED_OPTIONS) ?? ''
 
     const help: TaskHelp = {
-      intent: 'task.help',
+      protocolVersion,
+      intent: 'task.help_needed',
       taskId,
       question: decodeMimeEncodedWords(question),
       blockedReason: decodeMimeEncodedWords(blockedReason),
       suggestedOptions: suggestedOptionsStr
         ? suggestedOptionsStr.split('|').map((s) => decodeMimeEncodedWords(s.trim())).filter(Boolean)
-        : [],
+        : parsedBody.suggestedOptions,
       from,
       to,
       messageId: meta.messageId,
@@ -227,6 +328,7 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
 
   if (intent === 'task.ack') {
     const ack: TaskAck = {
+      protocolVersion,
       intent: 'task.ack',
       taskId,
       from,
@@ -234,6 +336,52 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
       messageId: meta.messageId,
     }
     return ack
+  }
+
+  if (intent === 'task.stream.opened') {
+    const streamId = getAampHeader(headers, AAMP_HEADER.STREAM_ID) ?? ''
+    if (!streamId) return null
+
+    const streamOpened: TaskStreamOpened = {
+      protocolVersion,
+      intent: 'task.stream.opened',
+      taskId,
+      streamId,
+      from,
+      to,
+      messageId: meta.messageId,
+    }
+    return streamOpened
+  }
+
+  if (intent === 'card.query') {
+    const cardQuery: CardQuery = {
+      protocolVersion,
+      intent: 'card.query',
+      taskId,
+      from,
+      to,
+      messageId: meta.messageId,
+      subject: meta.subject,
+      bodyText: '',
+    }
+    return cardQuery
+  }
+
+  if (intent === 'card.response') {
+    const summary = getAampHeader(headers, AAMP_HEADER.CARD_SUMMARY) ?? ''
+    const cardResponse: CardResponse = {
+      protocolVersion,
+      intent: 'card.response',
+      taskId,
+      summary: decodeMimeEncodedWords(summary) || decodedSubject.replace(/^\[AAMP Card\]\s*/i, '').trim(),
+      from,
+      to,
+      messageId: meta.messageId,
+      subject: meta.subject,
+      bodyText: '',
+    }
+    return cardResponse
   }
 
   return null
@@ -244,18 +392,20 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
  */
 export function buildDispatchHeaders(params: {
   taskId: string
-  /** Omit or pass undefined/null to send without a deadline */
-  timeoutSecs?: number | null
+  priority?: TaskDispatch['priority']
+  expiresAt?: string
   contextLinks: string[]
   dispatchContext?: Record<string, string>
   parentTaskId?: string
 }): Record<string, string> {
   const headers: Record<string, string> = {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
     [AAMP_HEADER.INTENT]: 'task.dispatch',
     [AAMP_HEADER.TASK_ID]: params.taskId,
+    [AAMP_HEADER.PRIORITY]: params.priority ?? 'normal',
   }
-  if (params.timeoutSecs != null) {
-    headers[AAMP_HEADER.TIMEOUT] = String(params.timeoutSecs)
+  if (params.expiresAt) {
+    headers[AAMP_HEADER.EXPIRES_AT] = params.expiresAt
   }
   if (params.contextLinks.length > 0) {
     headers[AAMP_HEADER.CONTEXT_LINKS] = params.contextLinks.join(',')
@@ -270,13 +420,34 @@ export function buildDispatchHeaders(params: {
   return headers
 }
 
+export function buildCancelHeaders(params: { taskId: string }): Record<string, string> {
+  return {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
+    [AAMP_HEADER.INTENT]: 'task.cancel',
+    [AAMP_HEADER.TASK_ID]: params.taskId,
+  }
+}
+
 /**
  * Build AAMP headers for a task.ack email
  */
 export function buildAckHeaders(opts: { taskId: string }): Record<string, string> {
   return {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
     [AAMP_HEADER.INTENT]: 'task.ack',
     [AAMP_HEADER.TASK_ID]: opts.taskId,
+  }
+}
+
+export function buildStreamOpenedHeaders(opts: {
+  taskId: string
+  streamId: string
+}): Record<string, string> {
+  return {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
+    [AAMP_HEADER.INTENT]: 'task.stream.opened',
+    [AAMP_HEADER.TASK_ID]: opts.taskId,
+    [AAMP_HEADER.STREAM_ID]: opts.streamId,
   }
 }
 
@@ -291,13 +462,10 @@ export function buildResultHeaders(params: {
   structuredResult?: TaskResult['structuredResult']
 }): Record<string, string> {
   const headers: Record<string, string> = {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
     [AAMP_HEADER.INTENT]: 'task.result',
     [AAMP_HEADER.TASK_ID]: params.taskId,
     [AAMP_HEADER.STATUS]: params.status,
-    [AAMP_HEADER.OUTPUT]: params.output,
-  }
-  if (params.errorMsg) {
-    headers[AAMP_HEADER.ERROR_MSG] = params.errorMsg
   }
   const structuredResult = encodeStructuredResult(params.structuredResult)
   if (structuredResult) {
@@ -307,7 +475,7 @@ export function buildResultHeaders(params: {
 }
 
 /**
- * Build AAMP headers for a task.help email
+ * Build AAMP headers for a task.help_needed email
  */
 export function buildHelpHeaders(params: {
   taskId: string
@@ -316,10 +484,31 @@ export function buildHelpHeaders(params: {
   suggestedOptions: string[]
 }): Record<string, string> {
   return {
-    [AAMP_HEADER.INTENT]: 'task.help',
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
+    [AAMP_HEADER.INTENT]: 'task.help_needed',
     [AAMP_HEADER.TASK_ID]: params.taskId,
-    [AAMP_HEADER.QUESTION]: params.question,
-    [AAMP_HEADER.BLOCKED_REASON]: params.blockedReason,
     [AAMP_HEADER.SUGGESTED_OPTIONS]: params.suggestedOptions.join('|'),
+  }
+}
+
+export function buildCardQueryHeaders(params: {
+  taskId: string
+}): Record<string, string> {
+  return {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
+    [AAMP_HEADER.INTENT]: 'card.query',
+    [AAMP_HEADER.TASK_ID]: params.taskId,
+  }
+}
+
+export function buildCardResponseHeaders(params: {
+  taskId: string
+  summary: string
+}): Record<string, string> {
+  return {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
+    [AAMP_HEADER.INTENT]: 'card.response',
+    [AAMP_HEADER.TASK_ID]: params.taskId,
+    [AAMP_HEADER.CARD_SUMMARY]: params.summary,
   }
 }

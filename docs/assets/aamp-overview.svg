@@ -33,7 +33,7 @@
 
   <path d="M864 438H336" stroke="#A78BFA" stroke-width="8" stroke-linecap="round"/>
   <path d="M344 422L316 438L344 454" fill="#A78BFA"/>
-  <text x="618" y="468" fill="#C4B5FD" font-family="Arial, Helvetica, sans-serif" font-size="20">task.ack / task.help / task.result</text>
+  <text x="618" y="468" fill="#C4B5FD" font-family="Arial, Helvetica, sans-serif" font-size="20">task.ack / task.help_needed / task.result</text>
 
   <defs>
     <linearGradient id="bg" x1="28" y1="28" x2="1172" y2="532" gradientUnits="userSpaceOnUse">

@@ -3,21 +3,26 @@ import type { TaskDispatch } from 'aamp-sdk'
 /**
  * Convert an AAMP TaskDispatch into a prompt string for an ACP agent.
  */
-export function buildPrompt(task: TaskDispatch): string {
+export function buildPrompt(task: TaskDispatch, threadContextText?: string): string {
   const parts = [
     `## AAMP Task`,
     ``,
     `Task ID: ${task.taskId}`,
     `From: ${task.from}`,
     `Title: ${task.title}`,
+    `Priority: ${task.priority}`,
   ]
 
   if (task.bodyText) {
     parts.push(``, `Description:`, task.bodyText)
   }
 
-  if (task.timeoutSecs) {
-    parts.push(``, `Deadline: ${task.timeoutSecs}s`)
+  if (threadContextText?.trim()) {
+    parts.push(``, threadContextText)
+  }
+
+  if (task.expiresAt) {
+    parts.push(``, `Expires At: ${task.expiresAt}`)
   }
 
   parts.push(

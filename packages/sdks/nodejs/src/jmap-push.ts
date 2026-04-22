@@ -10,9 +10,20 @@
  */
 
 import WebSocket from 'ws'
-import { EventEmitter } from 'events'
 import { parseAampHeaders } from './parser.js'
-import type { AampMessage, HumanReply } from './types.js'
+import type {
+  AampMessage,
+  CardQuery,
+  CardResponse,
+  HumanReply,
+  TaskAck,
+  TaskCancel,
+  TaskDispatch,
+  TaskHelp,
+  TaskResult,
+  TaskStreamOpened,
+} from './types.js'
+import { TinyEmitter } from './tiny-emitter.js'
 
 interface JmapSession {
   capabilities: Record<string, unknown>
@@ -62,12 +73,57 @@ interface JmapMethodResponse {
   methodResponses: Array<[string, Record<string, unknown>, string]>
 }
 
-export class JmapPushClient extends EventEmitter {
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+
+  const parts = [err.message]
+  const details = err as Error & {
+    code?: string
+    errno?: number | string
+    syscall?: string
+    address?: string
+    port?: number
+    cause?: unknown
+  }
+
+  if (details.code) parts.push(`code=${details.code}`)
+  if (details.errno !== undefined) parts.push(`errno=${details.errno}`)
+  if (details.syscall) parts.push(`syscall=${details.syscall}`)
+  if (details.address) parts.push(`address=${details.address}`)
+  if (details.port !== undefined) parts.push(`port=${details.port}`)
+
+  if (details.cause instanceof Error) {
+    parts.push(`cause=${describeError(details.cause)}`)
+  } else if (details.cause !== undefined) {
+    parts.push(`cause=${String(details.cause)}`)
+  }
+
+  return parts.join(' | ')
+}
+
+type JmapPushEvents = {
+  'task.dispatch': (task: TaskDispatch) => void
+  'task.cancel': (task: TaskCancel) => void
+  'task.result': (result: TaskResult) => void
+  'task.help_needed': (help: TaskHelp) => void
+  'task.ack': (ack: TaskAck) => void
+  'task.stream.opened': (stream: TaskStreamOpened) => void
+  'card.query': (query: CardQuery) => void
+  'card.response': (response: CardResponse) => void
+  reply: (reply: HumanReply) => void
+  connected: () => void
+  disconnected: (reason: string) => void
+  error: (err: Error) => void
+  _autoAck: (payload: { to: string; taskId: string; messageId: string }) => void
+}
+
+export class JmapPushClient extends TinyEmitter<JmapPushEvents> {
   private ws: WebSocket | null = null
   private session: JmapSession | null = null
   private reconnectTimer: NodeJS.Timeout | null = null
   private pollTimer: NodeJS.Timeout | null = null
   private pingTimer: NodeJS.Timeout | null = null
+  private safetySyncTimer: NodeJS.Timeout | null = null
   private readonly seenMessageIds = new Set<string>()
   private connected = false
   private pollingActive = false
@@ -83,6 +139,7 @@ export class JmapPushClient extends EventEmitter {
   private readonly reconnectInterval: number
   private readonly rejectUnauthorized: boolean
   private readonly pingIntervalMs = 5000
+  private readonly safetySyncIntervalMs = 5000
 
   constructor(opts: {
     email: string
@@ -105,6 +162,7 @@ export class JmapPushClient extends EventEmitter {
    */
   async start(): Promise<void> {
     this.running = true
+    this.startSafetySync()
     await this.connect()
   }
 
@@ -125,6 +183,10 @@ export class JmapPushClient extends EventEmitter {
       clearInterval(this.pingTimer)
       this.pingTimer = null
     }
+    if (this.safetySyncTimer) {
+      clearInterval(this.safetySyncTimer)
+      this.safetySyncTimer = null
+    }
     if (this.ws) {
       this.ws.close()
       this.ws = null
@@ -144,9 +206,14 @@ export class JmapPushClient extends EventEmitter {
    */
   private async fetchSession(): Promise<JmapSession> {
     const url = `${this.jmapUrl}/.well-known/jmap`
-    const res = await fetch(url, {
-      headers: { Authorization: this.getAuthHeader() },
-    })
+    let res: Response
+    try {
+      res = await fetch(url, {
+        headers: { Authorization: this.getAuthHeader() },
+      })
+    } catch (err) {
+      throw new Error(`fetchSession ${url} failed: ${describeError(err)}`)
+    }
 
     if (!res.ok) {
       throw new Error(`Failed to fetch JMAP session: ${res.status} ${res.statusText}`)
@@ -167,20 +234,25 @@ export class JmapPushClient extends EventEmitter {
     // which Stalwart populates with its own internal URL (e.g. http://aamp.local:8080/jmap)
     // and is unreachable when running behind a proxy.
     const apiUrl = `${this.jmapUrl}/jmap/`
-    const res = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: this.getAuthHeader(),
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        using: [
-          'urn:ietf:params:jmap:core',
-          'urn:ietf:params:jmap:mail',
-        ],
-        methodCalls: methods,
-      }),
-    })
+    let res: Response
+    try {
+      res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: this.getAuthHeader(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          using: [
+            'urn:ietf:params:jmap:core',
+            'urn:ietf:params:jmap:mail',
+          ],
+          methodCalls: methods,
+        }),
+      })
+    } catch (err) {
+      throw new Error(`jmapCall ${apiUrl} failed: ${describeError(err)}`)
+    }
 
     if (!res.ok) {
       throw new Error(`JMAP API call failed: ${res.status}`)
@@ -259,7 +331,7 @@ export class JmapPushClient extends EventEmitter {
    * Process a received email.
    *
    * Priority:
-   * 1. If X-AAMP-Intent is present → emit typed AAMP event (task.dispatch / task.result / task.help)
+     * 1. If X-AAMP-Intent is present → emit typed AAMP event (task.dispatch / task.cancel / task.result / task.help_needed)
    * 2. If In-Reply-To is present → emit 'reply' event so the application layer can
    *    resolve the thread (inReplyTo → taskId via Redis/DB) and handle human replies.
    * 3. Otherwise → ignore (not an AAMP-related email)
@@ -279,18 +351,20 @@ export class JmapPushClient extends EventEmitter {
     this.seenMessageIds.add(messageId)
 
     // ── Path 1: AAMP-tagged email ─────────────────────────────────────────────
+    const aampTextPartId = email.textBody?.[0]?.partId
+    const aampBodyText = aampTextPartId ? (email.bodyValues?.[aampTextPartId]?.value ?? '').trim() : ''
+
     const msg: AampMessage | null = parseAampHeaders({
       from: fromAddr,
       to: toAddr,
       messageId,
       subject: email.subject ?? '',
       headers: headerMap,
+      bodyText: aampBodyText,
     })
 
     if (msg && 'intent' in msg) {
       // Attach email body text (task description) to all AAMP messages
-      const aampTextPartId = email.textBody?.[0]?.partId
-      const aampBodyText = aampTextPartId ? (email.bodyValues?.[aampTextPartId]?.value ?? '').trim() : ''
       ;(msg as unknown as Record<string, unknown>).bodyText = aampBodyText
 
       // Attach received attachment metadata (blobId-based, downloadable via downloadBlob)
@@ -309,7 +383,33 @@ export class JmapPushClient extends EventEmitter {
         this.emit('_autoAck', { to: fromAddr, taskId: (msg as { taskId: string }).taskId, messageId })
       }
 
-      this.emit((msg as { intent: string }).intent, msg)
+      const aampMsg = msg as Exclude<AampMessage, HumanReply>
+      switch (aampMsg.intent) {
+                case 'task.dispatch':
+                  this.emit('task.dispatch', aampMsg)
+                  break
+                case 'task.cancel':
+                  this.emit('task.cancel', aampMsg)
+                  break
+                case 'task.result':
+          this.emit('task.result', aampMsg)
+          break
+        case 'task.help_needed':
+          this.emit('task.help_needed', aampMsg)
+          break
+        case 'task.ack':
+          this.emit('task.ack', aampMsg)
+          break
+        case 'task.stream.opened':
+          this.emit('task.stream.opened', aampMsg)
+          break
+        case 'card.query':
+          this.emit('card.query', aampMsg)
+          break
+        case 'card.response':
+          this.emit('card.response', aampMsg)
+          break
+      }
       return
     }
 
@@ -534,6 +634,18 @@ export class JmapPushClient extends EventEmitter {
     }
   }
 
+  private startSafetySync(): void {
+    if (this.safetySyncTimer) return
+
+    this.safetySyncTimer = setInterval(() => {
+      if (!this.running) return
+
+      void this.reconcileRecentEmails(20).catch((err) => {
+        this.emit('error', new Error(`Safety reconcile failed: ${(err as Error).message}`))
+      })
+    }, this.safetySyncIntervalMs)
+  }
+
   private async handleStateChange(stateChange: JmapStateChange): Promise<void> {
     if (!this.session) return
 
@@ -715,7 +827,7 @@ export class JmapPushClient extends EventEmitter {
    * Useful as a safety net when the WebSocket stays "connected"
    * but a notification is missed by an intermediate layer.
    */
-  async reconcileRecentEmails(limit = 20): Promise<number> {
+  async reconcileRecentEmails(limit = 20, opts?: { includeHistorical?: boolean }): Promise<number> {
     if (!this.session) {
       this.session = await this.fetchSession()
     }
@@ -768,7 +880,7 @@ export class JmapPushClient extends EventEmitter {
       const bTs = new Date(b.receivedAt).getTime()
       return aTs - bTs
     })) {
-      if (!this.shouldProcessBootstrapEmail(email)) continue
+      if (!opts?.includeHistorical && !this.shouldProcessBootstrapEmail(email)) continue
       this.processEmail(email)
     }
 

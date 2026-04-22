@@ -5,10 +5,37 @@ import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
+import { pathToFileURL } from 'node:url'
 import { stdin as input, stdout as output } from 'node:process'
-import { AampClient, type ReceivedAttachment, type SendHelpOptions, type SendResultOptions, type SendTaskOptions } from 'aamp-sdk'
+import {
+  AampClient,
+  renderThreadHistoryForAgent,
+  type HydratedTaskDispatch,
+  type ReceivedAttachment,
+  type SendCancelOptions,
+  type SendHelpOptions,
+  type SendResultOptions,
+  type SendTaskOptions,
+} from 'aamp-sdk'
 
-type CommandName = 'init' | 'login' | 'listen' | 'dispatch' | 'result' | 'help' | 'status' | 'inbox' | 'unknown'
+type CommandName =
+  | 'init'
+  | 'login'
+  | 'register'
+  | 'listen'
+  | 'dispatch'
+  | 'result'
+  | 'help'
+  | 'cancel'
+  | 'status'
+  | 'inbox'
+  | 'thread'
+  | 'directory-list'
+  | 'directory-search'
+  | 'directory-update'
+  | 'card-query'
+  | 'card-response'
+  | 'unknown'
 
 interface ParsedArgs {
   command: CommandName
@@ -19,24 +46,23 @@ interface ParsedArgs {
 
 interface CliProfile {
   email: string
-  jmapToken: string
   smtpPassword: string
-  jmapUrl: string
+  baseUrl?: string
   smtpHost?: string
   smtpPort?: number
   rejectUnauthorized?: boolean
 }
 
 const DEFAULT_PROFILE = 'default'
-const DEFAULT_JMAP_URL = 'https://meshmail.ai'
+const DEFAULT_BASE_URL = 'https://meshmail.ai'
 
-function deriveServiceDefaults(email: string): { jmapUrl: string; smtpHost: string } {
+export function deriveServiceDefaults(email: string): { baseUrl: string; smtpHost: string } {
   const domain = email.split('@')[1]?.trim()
   if (!domain) {
-    return { jmapUrl: DEFAULT_JMAP_URL, smtpHost: new URL(DEFAULT_JMAP_URL).hostname }
+    return { baseUrl: DEFAULT_BASE_URL, smtpHost: new URL(DEFAULT_BASE_URL).hostname }
   }
   return {
-    jmapUrl: `https://${domain}`,
+    baseUrl: `https://${domain}`,
     smtpHost: domain,
   }
 }
@@ -46,24 +72,36 @@ function printUsage(): void {
 
 Usage:
   aamp-cli login [--profile NAME]
+  aamp-cli register [--profile NAME] [--host URL] [--slug NAME]
   aamp-cli init [--profile NAME]
   aamp-cli listen [--profile NAME]
   aamp-cli status [--profile NAME]
   aamp-cli inbox [--profile NAME] [--limit N]
-  aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--timeout SECS] [--context-link URL]...
+  aamp-cli thread --task-id ID [--profile NAME] [--include-stream-opened]
+  aamp-cli directory-list [--profile NAME] [--include-self] [--limit N]
+  aamp-cli directory-search --query TEXT [--profile NAME] [--include-self] [--limit N]
+  aamp-cli directory-update [--profile NAME] [--summary TEXT] [--card-text TEXT] [--card-file PATH]
+  aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--priority urgent|high|normal] [--expires-at ISO] [--context-link URL]...
   aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TEXT] [--error TEXT]
   aamp-cli help --to EMAIL --task-id ID --question TEXT [--reason TEXT] [--option TEXT]...
+  aamp-cli cancel --to EMAIL --task-id ID [--body TEXT]
+  aamp-cli card-query --to EMAIL [--body TEXT]
+  aamp-cli card-response --to EMAIL --task-id ID --summary TEXT [--body TEXT] [--card-file PATH]
 
 Examples:
   aamp-cli login
+  aamp-cli register --host https://meshmail.ai --slug openclaw-agent
   aamp-cli listen --profile default
-  aamp-cli dispatch --to agent@meshmail.ai --title "Review this patch" --body "Please review PR #42"
-  aamp-cli result --to workflow@meshmail.ai --task-id 123 --status completed --output "Done"
-  aamp-cli help --to workflow@meshmail.ai --task-id 123 --question "Which environment?" --option staging --option production
+  aamp-cli directory-search --query reviewer
+  aamp-cli dispatch --to agent@meshmail.ai --title "Review this patch" --priority high --body "Please review PR #42"
+  aamp-cli result --to meego@meshmail.ai --task-id 123 --status completed --output "Done"
+  aamp-cli help --to meego@meshmail.ai --task-id 123 --question "Which environment?" --option staging --option production
+  aamp-cli cancel --to agent@meshmail.ai --task-id 123 --body "No longer needed"
+  aamp-cli card-query --to agent@meshmail.ai --query "What services do you provide?"
 `)
 }
 
-function parseArgs(argv: string[]): ParsedArgs {
+export function parseArgs(argv: string[]): ParsedArgs {
   const [rawCommand, ...rest] = argv
   const command = (rawCommand ?? 'unknown') as CommandName
   const positionals: string[] = []
@@ -130,18 +168,21 @@ async function saveProfile(profile: string, data: CliProfile): Promise<string> {
   return file
 }
 
-function resolveSmtpHost(jmapUrl: string, explicit?: string): string {
-  return explicit || new URL(jmapUrl).hostname
+function resolveBaseUrl(profile: CliProfile): string {
+  return profile.baseUrl || deriveServiceDefaults(profile.email).baseUrl
+}
+
+function resolveSmtpHost(baseUrl: string, explicit?: string): string {
+  return explicit || new URL(baseUrl).hostname
 }
 
 function createClient(profile: CliProfile): AampClient {
-  return new AampClient({
+  const baseUrl = resolveBaseUrl(profile)
+  return AampClient.fromMailboxIdentity({
     email: profile.email,
-    jmapToken: profile.jmapToken,
-    jmapUrl: profile.jmapUrl,
-    smtpHost: resolveSmtpHost(profile.jmapUrl, profile.smtpHost),
-    smtpPort: profile.smtpPort ?? 587,
     smtpPassword: profile.smtpPassword,
+    baseUrl,
+    smtpPort: profile.smtpPort ?? 587,
     rejectUnauthorized: profile.rejectUnauthorized,
   })
 }
@@ -161,113 +202,182 @@ async function prompt(question: string, defaultValue = ''): Promise<string> {
   }
 }
 
-async function runInit(args: ParsedArgs): Promise<void> {
+export async function runInit(args: ParsedArgs): Promise<void> {
   const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
   const existingFile = getProfilePath(profile)
   const existing = existsSync(existingFile) ? await loadProfile(profile) : null
 
   const email = firstArg(args, 'email') ?? await prompt('Mailbox email', existing?.email ?? '')
   const smtpPassword = firstArg(args, 'password') ?? firstArg(args, 'smtp-password') ?? await prompt('Mailbox password', existing?.smtpPassword ?? '')
-  const jmapToken = Buffer.from(`${email}:${smtpPassword}`).toString('base64')
   const inferred = deriveServiceDefaults(email)
-  const jmapUrl = firstArg(args, 'jmap-url') ?? existing?.jmapUrl ?? inferred.jmapUrl
+  const baseUrl = firstArg(args, 'base-url') ?? existing?.baseUrl ?? inferred.baseUrl
   const smtpHost = firstArg(args, 'smtp-host') ?? existing?.smtpHost ?? inferred.smtpHost
   const smtpPort = Number(firstArg(args, 'smtp-port') ?? String(existing?.smtpPort ?? 587))
   const rejectUnauthorized = (firstArg(args, 'reject-unauthorized') ?? String(existing?.rejectUnauthorized ?? true)) !== 'false'
 
   const file = await saveProfile(profile, {
     email,
-    jmapToken,
     smtpPassword,
-    jmapUrl,
+    baseUrl,
     smtpHost,
     smtpPort,
     rejectUnauthorized,
   })
 
   console.log(`Saved profile "${profile}" to ${file}`)
-  console.log(`Derived JMAP URL: ${jmapUrl}`)
+  console.log(`Derived base URL: ${baseUrl}`)
   console.log(`Derived SMTP host: ${smtpHost}:${smtpPort}`)
 }
 
-async function runLogin(args: ParsedArgs): Promise<void> {
+export async function runLogin(args: ParsedArgs): Promise<void> {
   await runInit(args)
 }
 
-function printDispatch(task: {
+export async function runRegister(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const host = firstArg(args, 'host') ?? await prompt('AAMP host', DEFAULT_BASE_URL)
+  const slugInput = firstArg(args, 'slug') ?? await prompt('Mailbox slug', 'agent')
+  const slug = slugInput.toLowerCase().replace(/[\s_]+/g, '-').replace(/[^a-z0-9-]/g, '')
+  if (slug.length < 2) {
+    throw new Error('Mailbox slug must be at least 2 characters')
+  }
+
+  const identity = await AampClient.registerMailbox({
+    aampHost: host,
+    slug,
+    description: `Registered via aamp-cli (${profile})`,
+  })
+
+  const inferred = deriveServiceDefaults(identity.email)
+  const file = await saveProfile(profile, {
+    email: identity.email,
+    smtpPassword: identity.smtpPassword,
+    baseUrl: identity.baseUrl,
+    smtpHost: inferred.smtpHost,
+    smtpPort: 587,
+    rejectUnauthorized: true,
+  })
+
+  console.log(JSON.stringify({
+    profile,
+    email: identity.email,
+    baseUrl: identity.baseUrl,
+    mailboxToken: identity.mailboxToken,
+    savedTo: file,
+  }, null, 2))
+}
+
+export function printDispatch(task: {
   taskId: string
   title: string
   from: string
+  priority?: 'urgent' | 'high' | 'normal'
+  expiresAt?: string
   bodyText?: string
-  timeoutSecs?: number
   contextLinks?: string[]
   attachments?: ReceivedAttachment[]
   dispatchContext?: Record<string, string>
-}): void {
-  console.log(`\n[AAMP] <- task.dispatch ${task.taskId}`)
-  console.log(`  from: ${task.from}`)
-  console.log(`  title: ${task.title}`)
-  if (task.timeoutSecs) console.log(`  timeout: ${task.timeoutSecs}s`)
-  if (task.contextLinks?.length) console.log(`  contextLinks: ${task.contextLinks.join(', ')}`)
+  threadContextText?: string
+}, logger: Pick<typeof console, 'log'> = console): void {
+  logger.log(`\n[AAMP] <- task.dispatch ${task.taskId}`)
+  logger.log(`  from: ${task.from}`)
+  logger.log(`  title: ${task.title}`)
+  logger.log(`  priority: ${task.priority}`)
+  if (task.expiresAt) logger.log(`  expiresAt: ${task.expiresAt}`)
+  if (task.contextLinks?.length) logger.log(`  contextLinks: ${task.contextLinks.join(', ')}`)
   if (task.dispatchContext && Object.keys(task.dispatchContext).length) {
-    console.log(`  dispatchContext: ${JSON.stringify(task.dispatchContext)}`)
+    logger.log(`  dispatchContext: ${JSON.stringify(task.dispatchContext)}`)
   }
   if (task.attachments?.length) {
-    console.log(`  attachments: ${task.attachments.map((item) => item.filename).join(', ')}`)
+    logger.log(`  attachments: ${task.attachments.map((item) => item.filename).join(', ')}`)
+  }
+  if (task.threadContextText?.trim()) {
+    logger.log('  priorContext:')
+    logger.log(task.threadContextText.split('\n').map((line) => `    ${line}`).join('\n'))
   }
   if (task.bodyText?.trim()) {
-    console.log('  body:')
-    console.log(task.bodyText.split('\n').map((line) => `    ${line}`).join('\n'))
+    logger.log('  body:')
+    logger.log(task.bodyText.split('\n').map((line) => `    ${line}`).join('\n'))
   }
 }
 
-async function runListen(args: ParsedArgs): Promise<void> {
-  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
-  const client = createClient(await loadProfile(profile))
+type ListenClient = Pick<
+  AampClient,
+  'on' | 'email' | 'isUsingPollingFallback' | 'connect' | 'disconnect' | 'hydrateTaskDispatch'
+>
+
+type ListenLogger = Pick<typeof console, 'log' | 'error'>
+
+export function attachListenHandlers(client: ListenClient, logger: ListenLogger = console): void {
   let lastErrorSignature = ''
 
   client.on('connected', () => {
-    console.log(`[AAMP] connected as ${client.email} (${formatTransport(client)})`)
+    logger.log(`[AAMP] connected as ${client.email} (${formatTransport(client as AampClient)})`)
   })
   client.on('disconnected', (reason) => {
-    console.log(`[AAMP] disconnected: ${reason}`)
+    logger.log(`[AAMP] disconnected: ${reason}`)
   })
   client.on('error', (err) => {
     const isFallbackActive = client.isUsingPollingFallback()
     const isHandshakeNoise = err.message.startsWith('JMAP WebSocket handshake failed:')
     const isFallbackTransition = err.message.startsWith('JMAP WebSocket unavailable, falling back to polling:')
     if (isFallbackTransition) {
-      console.log(`[AAMP] websocket unavailable, using polling fallback`)
+      logger.log(`[AAMP] websocket unavailable, using polling fallback`)
       return
     }
     if (isFallbackActive && isHandshakeNoise) return
     if (err.message === lastErrorSignature) return
     lastErrorSignature = err.message
-    console.error(`[AAMP] error: ${err.message}`)
+    logger.error(`[AAMP] error: ${err.message}`)
   })
   client.on('task.dispatch', (task) => {
-    printDispatch(task)
+    void client.hydrateTaskDispatch(task)
+      .then((hydrated: HydratedTaskDispatch) => {
+        printDispatch(hydrated, logger)
+      })
+      .catch(() => {
+        printDispatch(task, logger)
+      })
+  })
+  client.on('task.cancel', (cancel) => {
+    logger.log(`\n[AAMP] <- task.cancel ${cancel.taskId} from=${cancel.from}`)
+    if (cancel.bodyText?.trim()) logger.log(`  body: ${cancel.bodyText}`)
   })
   client.on('task.ack', (ack) => {
-    console.log(`\n[AAMP] <- task.ack ${ack.taskId} from=${ack.from}`)
+    logger.log(`\n[AAMP] <- task.ack ${ack.taskId} from=${ack.from}`)
   })
-  client.on('task.help', (help) => {
-    console.log(`\n[AAMP] <- task.help ${help.taskId} from=${help.from}`)
-    console.log(`  question: ${help.question}`)
-    if (help.blockedReason) console.log(`  blockedReason: ${help.blockedReason}`)
-    if (help.suggestedOptions?.length) console.log(`  suggestedOptions: ${help.suggestedOptions.join(', ')}`)
+  client.on('task.help_needed', (help) => {
+    logger.log(`\n[AAMP] <- task.help_needed ${help.taskId} from=${help.from}`)
+    logger.log(`  question: ${help.question}`)
+    if (help.blockedReason) logger.log(`  blockedReason: ${help.blockedReason}`)
+    if (help.suggestedOptions?.length) logger.log(`  suggestedOptions: ${help.suggestedOptions.join(', ')}`)
   })
   client.on('task.result', (result) => {
-    console.log(`\n[AAMP] <- task.result ${result.taskId} from=${result.from} status=${result.status}`)
-    if (result.output) console.log(`  output: ${result.output}`)
-    if (result.errorMsg) console.log(`  error: ${result.errorMsg}`)
-    if (result.attachments?.length) console.log(`  attachments: ${result.attachments.map((item) => item.filename).join(', ')}`)
+    logger.log(`\n[AAMP] <- task.result ${result.taskId} from=${result.from} status=${result.status}`)
+    if (result.output) logger.log(`  output: ${result.output}`)
+    if (result.errorMsg) logger.log(`  error: ${result.errorMsg}`)
+    if (result.attachments?.length) logger.log(`  attachments: ${result.attachments.map((item) => item.filename).join(', ')}`)
+  })
+  client.on('card.query', (cardQuery) => {
+    logger.log(`\n[AAMP] <- card.query ${cardQuery.taskId} from=${cardQuery.from}`)
+    logger.log(`  subject: ${cardQuery.subject}`)
+    if (cardQuery.bodyText?.trim()) logger.log(`  body: ${cardQuery.bodyText}`)
+  })
+  client.on('card.response', (cardResponse) => {
+    logger.log(`\n[AAMP] <- card.response ${cardResponse.taskId} from=${cardResponse.from}`)
+    logger.log(`  summary: ${cardResponse.summary}`)
+    if (cardResponse.bodyText?.trim()) logger.log(`  body: ${cardResponse.bodyText}`)
   })
   client.on('reply', (reply) => {
-    console.log(`\n[AAMP] <- human reply inReplyTo=${reply.inReplyTo} from=${reply.from}`)
-    console.log(`  body: ${reply.bodyText}`)
+    logger.log(`\n[AAMP] <- human reply inReplyTo=${reply.inReplyTo} from=${reply.from}`)
+    logger.log(`  body: ${reply.bodyText}`)
   })
+}
 
+export async function runListen(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const client = createClient(await loadProfile(profile))
+  attachListenHandlers(client)
   await client.connect()
   console.log(`[AAMP] listening as ${client.email}; press Ctrl+C to stop`)
 
@@ -281,7 +391,7 @@ async function runListen(args: ParsedArgs): Promise<void> {
   await new Promise<void>(() => {})
 }
 
-async function runStatus(args: ParsedArgs): Promise<void> {
+export async function runStatus(args: ParsedArgs): Promise<void> {
   const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
   const cfg = await loadProfile(profile)
   const client = createClient(cfg)
@@ -290,8 +400,8 @@ async function runStatus(args: ParsedArgs): Promise<void> {
   console.log(JSON.stringify({
     profile,
     email: cfg.email,
-    jmapUrl: cfg.jmapUrl,
-    smtpHost: resolveSmtpHost(cfg.jmapUrl, cfg.smtpHost),
+    baseUrl: resolveBaseUrl(cfg),
+    smtpHost: resolveSmtpHost(resolveBaseUrl(cfg), cfg.smtpHost),
     smtpPort: cfg.smtpPort ?? 587,
     transport: formatTransport(client),
     smtpVerified: smtpOk,
@@ -299,7 +409,7 @@ async function runStatus(args: ParsedArgs): Promise<void> {
   client.disconnect()
 }
 
-async function runInbox(args: ParsedArgs): Promise<void> {
+export async function runInbox(args: ParsedArgs): Promise<void> {
   const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
   const limit = Number(firstArg(args, 'limit') ?? '20')
   const client = createClient(await loadProfile(profile))
@@ -307,21 +417,36 @@ async function runInbox(args: ParsedArgs): Promise<void> {
   console.log(`Reconciled ${processed} recent email(s)`)
 }
 
-async function runDispatch(args: ParsedArgs): Promise<void> {
+export async function runThread(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const client = createClient(await loadProfile(profile))
+  const taskId = requireArg(args, 'task-id')
+  const history = await client.getThreadHistory(taskId, {
+    includeStreamOpened: args.booleans.has('include-stream-opened'),
+  })
+  console.log(JSON.stringify({
+    taskId: history.taskId,
+    context: renderThreadHistoryForAgent(history.events),
+    events: history.events,
+  }, null, 2))
+}
+
+export async function runDispatch(args: ParsedArgs): Promise<void> {
   const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
   const client = createClient(await loadProfile(profile))
   const payload: SendTaskOptions = {
     to: requireArg(args, 'to'),
     title: requireArg(args, 'title'),
     bodyText: firstArg(args, 'body'),
-    timeoutSecs: firstArg(args, 'timeout') ? Number(firstArg(args, 'timeout')) : undefined,
+    priority: firstArg(args, 'priority') as SendTaskOptions['priority'] | undefined,
+    expiresAt: firstArg(args, 'expires-at'),
     contextLinks: allArgs(args, 'context-link'),
   }
   const result = await client.sendTask(payload)
   console.log(JSON.stringify(result, null, 2))
 }
 
-async function runResult(args: ParsedArgs): Promise<void> {
+export async function runResult(args: ParsedArgs): Promise<void> {
   const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
   const client = createClient(await loadProfile(profile))
   const payload: SendResultOptions = {
@@ -335,7 +460,7 @@ async function runResult(args: ParsedArgs): Promise<void> {
   console.log(`Sent task.result for ${payload.taskId}`)
 }
 
-async function runHelp(args: ParsedArgs): Promise<void> {
+export async function runHelp(args: ParsedArgs): Promise<void> {
   const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
   const client = createClient(await loadProfile(profile))
   const payload: SendHelpOptions = {
@@ -346,10 +471,81 @@ async function runHelp(args: ParsedArgs): Promise<void> {
     suggestedOptions: allArgs(args, 'option'),
   }
   await client.sendHelp(payload)
-  console.log(`Sent task.help for ${payload.taskId}`)
+  console.log(`Sent task.help_needed for ${payload.taskId}`)
 }
 
-async function main(): Promise<void> {
+export async function runCancel(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const client = createClient(await loadProfile(profile))
+  const payload: SendCancelOptions = {
+    to: requireArg(args, 'to'),
+    taskId: requireArg(args, 'task-id'),
+    bodyText: firstArg(args, 'body'),
+  }
+  await client.sendCancel(payload)
+  console.log(`Sent task.cancel for ${payload.taskId}`)
+}
+
+export async function runDirectoryList(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const client = createClient(await loadProfile(profile))
+  const agents = await client.listDirectory({
+    includeSelf: args.booleans.has('include-self'),
+    limit: firstArg(args, 'limit') ? Number(firstArg(args, 'limit')) : undefined,
+  })
+  console.log(JSON.stringify({ agents }, null, 2))
+}
+
+export async function runDirectorySearch(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const client = createClient(await loadProfile(profile))
+  const agents = await client.searchDirectory({
+    query: requireArg(args, 'query'),
+    includeSelf: args.booleans.has('include-self'),
+    limit: firstArg(args, 'limit') ? Number(firstArg(args, 'limit')) : undefined,
+  })
+  console.log(JSON.stringify({ agents }, null, 2))
+}
+
+export async function runDirectoryUpdate(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const client = createClient(await loadProfile(profile))
+  const cardFile = firstArg(args, 'card-file')
+  const cardText = firstArg(args, 'card-text')
+    ?? (cardFile ? await readFile(cardFile, 'utf8') : undefined)
+  const profileData = await client.updateDirectoryProfile({
+    summary: firstArg(args, 'summary'),
+    cardText,
+  })
+  console.log(JSON.stringify({ profile: profileData }, null, 2))
+}
+
+export async function runCardQuery(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const client = createClient(await loadProfile(profile))
+  const result = await client.sendCardQuery({
+    to: requireArg(args, 'to'),
+    bodyText: firstArg(args, 'body'),
+  })
+  console.log(JSON.stringify(result, null, 2))
+}
+
+export async function runCardResponse(args: ParsedArgs): Promise<void> {
+  const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const client = createClient(await loadProfile(profile))
+  const cardFile = firstArg(args, 'card-file')
+  const bodyText = firstArg(args, 'body')
+    ?? (cardFile ? await readFile(cardFile, 'utf8') : '')
+  await client.sendCardResponse({
+    to: requireArg(args, 'to'),
+    taskId: requireArg(args, 'task-id'),
+    summary: requireArg(args, 'summary'),
+    bodyText,
+  })
+  console.log(`Sent card.response for ${requireArg(args, 'task-id')}`)
+}
+
+export async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
   if (args.booleans.has('help') || args.command === 'unknown') {
     printUsage()
@@ -359,6 +555,9 @@ async function main(): Promise<void> {
   switch (args.command) {
     case 'login':
       await runLogin(args)
+      return
+    case 'register':
+      await runRegister(args)
       return
     case 'init':
       await runInit(args)
@@ -372,6 +571,9 @@ async function main(): Promise<void> {
     case 'inbox':
       await runInbox(args)
       return
+    case 'thread':
+      await runThread(args)
+      return
     case 'dispatch':
       await runDispatch(args)
       return
@@ -381,12 +583,34 @@ async function main(): Promise<void> {
     case 'help':
       await runHelp(args)
       return
+    case 'cancel':
+      await runCancel(args)
+      return
+    case 'directory-list':
+      await runDirectoryList(args)
+      return
+    case 'directory-search':
+      await runDirectorySearch(args)
+      return
+    case 'directory-update':
+      await runDirectoryUpdate(args)
+      return
+    case 'card-query':
+      await runCardQuery(args)
+      return
+    case 'card-response':
+      await runCardResponse(args)
+      return
     default:
       printUsage()
   }
 }
 
-main().catch((err) => {
-  console.error(`[aamp-cli] ${err instanceof Error ? err.message : String(err)}`)
-  process.exit(1)
-})
+const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(`[aamp-cli] ${err instanceof Error ? err.message : String(err)}`)
+    process.exit(1)
+  })
+}

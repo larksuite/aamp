@@ -6,6 +6,9 @@ const agentConfigSchema = z.object({
   acpCommand: z.string().min(1),
   slug: z.string().regex(/^[a-z0-9-]+$/).optional(),
   description: z.string().optional(),
+  summary: z.string().optional(),
+  cardText: z.string().optional(),
+  cardFile: z.string().optional(),
   credentialsFile: z.string().optional(),
   senderWhitelist: z.array(z.string().email()).optional(),
 })

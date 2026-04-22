@@ -7,7 +7,7 @@
     "skills"
   ],
   "license": "MIT",
-  "version": "0.1.12",
+  "version": "0.1.32",
   "description": "AAMP Agent Mail Protocol — OpenClaw plugin. Gives OpenClaw an AAMP mailbox identity and lets it receive, process and reply to AAMP tasks.",
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,9 @@
   },
   "openclaw": {
     "id": "aamp-openclaw-plugin",
-    "extensions": ["./dist/index.js"],
+    "extensions": [
+      "./dist/index.js"
+    ],
     "configSchema": {
       "type": "object",
       "properties": {
@@ -29,6 +31,18 @@
           "default": "openclaw-agent",
           "description": "Agent name prefix used in the mailbox address"
         },
+        "summary": {
+          "type": "string",
+          "description": "Directory summary shown when other agents search for this agent"
+        },
+        "cardText": {
+          "type": "string",
+          "description": "Inline card text used for automatic card.response replies"
+        },
+        "cardFile": {
+          "type": "string",
+          "description": "Absolute path to a card text file used when cardText is not set"
+        },
         "credentialsFile": {
           "type": "string",
           "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
@@ -38,14 +52,20 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["sender"],
+            "required": [
+              "sender"
+            ],
             "properties": {
-              "sender": { "type": "string" },
+              "sender": {
+                "type": "string"
+              },
               "dispatchContextRules": {
                 "type": "object",
                 "additionalProperties": {
                   "type": "array",
-                  "items": { "type": "string" }
+                  "items": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -55,24 +75,59 @@
       }
     },
     "uiHints": {
-      "aampHost": { "label": "AAMP Host", "placeholder": "https://meshmail.ai", "promptOnInstall": true },
-      "slug": { "label": "Agent Slug", "placeholder": "openclaw-agent", "promptOnInstall": false },
-      "credentialsFile": { "label": "Credentials File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json", "promptOnInstall": false },
-      "senderPolicies": { "label": "Sender Policies", "placeholder": "[{\"sender\":\"platform-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]", "promptOnInstall": true }
+      "aampHost": {
+        "label": "AAMP Host",
+        "placeholder": "https://meshmail.ai",
+        "promptOnInstall": true
+      },
+      "slug": {
+        "label": "Agent Slug",
+        "placeholder": "openclaw-agent",
+        "promptOnInstall": false
+      },
+      "summary": {
+        "label": "Directory Summary",
+        "placeholder": "Code review, debugging, and incident summaries",
+        "promptOnInstall": false
+      },
+      "cardText": {
+        "label": "Card Text",
+        "placeholder": "Detailed capability card text",
+        "promptOnInstall": false
+      },
+      "cardFile": {
+        "label": "Card File",
+        "placeholder": "/absolute/path/to/card.md",
+        "promptOnInstall": false
+      },
+      "credentialsFile": {
+        "label": "Credentials File",
+        "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
+        "promptOnInstall": false
+      },
+      "senderPolicies": {
+        "label": "Sender Policies",
+        "placeholder": "[{\"sender\":\"meegle-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]",
+        "promptOnInstall": true
+      }
     }
   },
   "scripts": {
     "build": "node esbuild.config.js",
-    "dev": "node esbuild.config.js --watch"
+    "dev": "node esbuild.config.js --watch",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
+    "test": "vitest run"
   },
   "dependencies": {
-    "aamp-sdk": "^0.1.6",
+    "aamp-sdk": "file:../sdks/nodejs",
     "nodemailer": "^6.9.10",
     "ws": "^8.16.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
     "esbuild": "^0.20.2",
-    "typescript": "^5.4.3"
+    "typescript": "^5.4.3",
+    "vitest": "^1.6.1"
   }
 }

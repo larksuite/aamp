@@ -126,7 +126,14 @@ export async function runInit(configPath: string): Promise<void> {
     }
 
     try {
-      const regRes = await fetch(`${aampHost}/api/nodes/self-register`, {
+      const discoveryRes = await fetch(`${aampHost}/.well-known/aamp`)
+      if (!discoveryRes.ok) throw new Error(`Discovery: ${discoveryRes.status}`)
+      const discovery = await discoveryRes.json() as { api?: { url?: string } }
+      const apiUrl = discovery.api?.url
+      if (!apiUrl) throw new Error('AAMP discovery did not return api.url')
+      const apiBase = new URL(apiUrl, `${aampHost}/`).toString()
+
+      const regRes = await fetch(`${apiBase}?action=aamp.mailbox.register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ slug, description: `${name} via ACP bridge` }),
@@ -134,14 +141,14 @@ export async function runInit(configPath: string): Promise<void> {
       if (!regRes.ok) throw new Error(`${regRes.status}`)
       const regData = await regRes.json() as { registrationCode: string; email: string }
 
-      const credRes = await fetch(`${aampHost}/api/nodes/credentials?code=${regData.registrationCode}`)
+      const credRes = await fetch(`${apiBase}?action=aamp.mailbox.credentials&code=${encodeURIComponent(regData.registrationCode)}`)
       if (!credRes.ok) throw new Error(`Credential exchange: ${credRes.status}`)
-      const creds = await credRes.json() as { email: string; jmap: { token: string }; smtp: { password: string } }
+      const creds = await credRes.json() as { email: string; mailbox: { token: string }; smtp: { password: string } }
 
       mkdirSync(dirname(credFile), { recursive: true })
       writeFileSync(credFile, JSON.stringify({
         email: creds.email,
-        jmapToken: creds.jmap.token,
+        mailboxToken: creds.mailbox.token,
         smtpPassword: creds.smtp.password,
       }, null, 2))
 

@@ -1,0 +1,43 @@
+<svg width="1200" height="720" viewBox="0 0 1200 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="720" rx="36" fill="#0B1220"/>
+  <rect x="40" y="40" width="1120" height="640" rx="28" fill="#0F172A" stroke="#22304A"/>
+  <text x="72" y="108" fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="700">AAMP for ISVs</text>
+  <text x="72" y="146" fill="#94A3B8" font-family="Arial, Helvetica, sans-serif" font-size="22">Connect external agent runtimes to workflow products through mailbox-native async messaging.</text>
+
+  <rect x="84" y="210" width="250" height="170" rx="24" fill="#172033" stroke="#2F456E"/>
+  <text x="109" y="258" fill="#E2E8F0" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">ISV Platform</text>
+  <text x="109" y="298" fill="#AFC3DD" font-family="Arial, Helvetica, sans-serif" font-size="20">Workflow</text>
+  <text x="109" y="328" fill="#AFC3DD" font-family="Arial, Helvetica, sans-serif" font-size="20">AI Node</text>
+  <text x="109" y="358" fill="#AFC3DD" font-family="Arial, Helvetica, sans-serif" font-size="20">Status / Writeback</text>
+
+  <rect x="474" y="170" width="250" height="250" rx="24" fill="#132A28" stroke="#2A6B63"/>
+  <text x="510" y="228" fill="#ECFDF5" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">meshmail.ai</text>
+  <text x="510" y="268" fill="#B7E4D9" font-family="Arial, Helvetica, sans-serif" font-size="20">AAMP Host</text>
+  <text x="510" y="300" fill="#B7E4D9" font-family="Arial, Helvetica, sans-serif" font-size="20">SMTP + JMAP</text>
+  <text x="510" y="332" fill="#B7E4D9" font-family="Arial, Helvetica, sans-serif" font-size="20">/.well-known/aamp</text>
+  <text x="510" y="364" fill="#B7E4D9" font-family="Arial, Helvetica, sans-serif" font-size="20">Mailbox Identity</text>
+
+  <rect x="864" y="120" width="250" height="130" rx="24" fill="#221A3C" stroke="#52408C"/>
+  <text x="900" y="176" fill="#F5F3FF" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">SDK</text>
+  <text x="900" y="212" fill="#D9D0FF" font-family="Arial, Helvetica, sans-serif" font-size="20">Embed into your own runtime</text>
+
+  <rect x="864" y="280" width="250" height="130" rx="24" fill="#2B1A32" stroke="#7A426F"/>
+  <text x="900" y="336" fill="#FDF2F8" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">OpenClaw</text>
+  <text x="900" y="372" fill="#F2CDE0" font-family="Arial, Helvetica, sans-serif" font-size="20">Plugin-based participant</text>
+
+  <rect x="864" y="440" width="250" height="130" rx="24" fill="#2B2417" stroke="#826A2A"/>
+  <text x="900" y="496" fill="#FFFBEB" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">ACP Bridge / CLI</text>
+  <text x="900" y="532" fill="#FCE7B2" font-family="Arial, Helvetica, sans-serif" font-size="20">Bridge or operate from shell</text>
+
+  <path d="M334 285H474" stroke="#60A5FA" stroke-width="8" stroke-linecap="round"/>
+  <path d="M724 225H864" stroke="#34D399" stroke-width="8" stroke-linecap="round"/>
+  <path d="M724 345H864" stroke="#34D399" stroke-width="8" stroke-linecap="round"/>
+  <path d="M724 505H864" stroke="#34D399" stroke-width="8" stroke-linecap="round"/>
+  <path d="M474 325H334" stroke="#F59E0B" stroke-width="8" stroke-linecap="round"/>
+
+  <text x="356" y="268" fill="#93C5FD" font-family="Arial, Helvetica, sans-serif" font-size="18">task.dispatch</text>
+  <text x="356" y="352" fill="#FCD34D" font-family="Arial, Helvetica, sans-serif" font-size="18">task.ack / help_needed / result</text>
+  <text x="751" y="212" fill="#86EFAC" font-family="Arial, Helvetica, sans-serif" font-size="18">integrate</text>
+  <text x="751" y="332" fill="#86EFAC" font-family="Arial, Helvetica, sans-serif" font-size="18">connect</text>
+  <text x="751" y="492" fill="#86EFAC" font-family="Arial, Helvetica, sans-serif" font-size="18">bridge / operate</text>
+</svg>
