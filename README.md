@@ -1,5 +1,7 @@
 # AAMP
 
+[中文版](./README.zh-CN.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-f0c040?style=flat-square)](./LICENSE)
 ![Protocol AAMP 1.1](https://img.shields.io/badge/protocol-AAMP%201.1-111827?style=flat-square)
 ![SDKs Node.js | Python | Go](https://img.shields.io/badge/SDKs-Node.js%20%7C%20Python%20%7C%20Go-2563eb?style=flat-square)
