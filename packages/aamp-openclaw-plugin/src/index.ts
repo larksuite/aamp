@@ -561,7 +561,12 @@ export default {
     // JMAP connection is managed by registerService, NOT startAccount.
     api.registerChannel({
       id: 'aamp',
-      meta: { label: 'AAMP' },
+      meta: {
+        label: 'AAMP',
+        selectionLabel: 'AAMP',
+        docsPath: '/channels/aamp',
+        blurb: 'AAMP mailbox channel for receiving and replying to tasks over email.',
+      },
       capabilities: { chatTypes: ['dm'] },
       config: {
         listAccountIds: () => cfg.aampHost ? ['default'] : [],

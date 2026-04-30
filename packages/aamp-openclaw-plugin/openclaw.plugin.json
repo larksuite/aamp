@@ -2,6 +2,49 @@
   "id": "aamp-openclaw-plugin",
   "kind": "channel",
   "channels": ["aamp"],
+  "channelConfigs": {
+    "aamp": {
+      "label": "AAMP",
+      "description": "AAMP mailbox channel for receiving and replying to tasks over email.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "aampHost": { "type": "string" },
+          "slug": { "type": "string", "default": "openclaw-agent" },
+          "summary": { "type": "string" },
+          "cardText": { "type": "string" },
+          "cardFile": { "type": "string" },
+          "credentialsFile": { "type": "string", "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json" },
+          "senderPolicies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["sender"],
+              "properties": {
+                "sender": { "type": "string" },
+                "dispatchContextRules": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "uiHints": {
+        "aampHost": { "label": "AAMP Host", "placeholder": "https://meshmail.ai", "promptOnInstall": true },
+        "slug": { "label": "Agent Slug", "placeholder": "openclaw-agent", "promptOnInstall": false },
+        "summary": { "label": "Directory Summary", "placeholder": "Code review, debugging, and incident summaries", "promptOnInstall": false },
+        "cardText": { "label": "Card Text", "placeholder": "Detailed capability card text", "promptOnInstall": false },
+        "cardFile": { "label": "Card File", "placeholder": "/absolute/path/to/card.md", "promptOnInstall": false },
+        "credentialsFile": { "label": "Credentials File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json", "promptOnInstall": false },
+        "senderPolicies": { "label": "Sender Policies", "placeholder": "[{\"sender\":\"meegle-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]", "promptOnInstall": true }
+      }
+    }
+  },
   "extensions": ["./dist/index.js"],
   "configSchema": {
     "type": "object",

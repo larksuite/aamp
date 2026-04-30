@@ -19,6 +19,104 @@
     "extensions": [
       "./dist/index.js"
     ],
+    "channelConfigs": {
+      "aamp": {
+        "label": "AAMP",
+        "description": "AAMP mailbox channel for receiving and replying to tasks over email.",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "aampHost": {
+              "type": "string",
+              "description": "AAMP service host, e.g. https://meshmail.ai"
+            },
+            "slug": {
+              "type": "string",
+              "default": "openclaw-agent",
+              "description": "Agent name prefix used in the mailbox address"
+            },
+            "summary": {
+              "type": "string",
+              "description": "Directory summary shown when other agents search for this agent"
+            },
+            "cardText": {
+              "type": "string",
+              "description": "Inline card text used for automatic card.response replies"
+            },
+            "cardFile": {
+              "type": "string",
+              "description": "Absolute path to a card text file used when cardText is not set"
+            },
+            "credentialsFile": {
+              "type": "string",
+              "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
+              "description": "Path to persist AAMP credentials between restarts"
+            },
+            "senderPolicies": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "sender"
+                ],
+                "properties": {
+                  "sender": {
+                    "type": "string"
+                  },
+                  "dispatchContextRules": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "description": "Per-sender authorization policies. Each sender can optionally require exact-match X-AAMP-Dispatch-Context key/value pairs."
+            }
+          }
+        },
+        "uiHints": {
+          "aampHost": {
+            "label": "AAMP Host",
+            "placeholder": "https://meshmail.ai",
+            "promptOnInstall": true
+          },
+          "slug": {
+            "label": "Agent Slug",
+            "placeholder": "openclaw-agent",
+            "promptOnInstall": false
+          },
+          "summary": {
+            "label": "Directory Summary",
+            "placeholder": "Code review, debugging, and incident summaries",
+            "promptOnInstall": false
+          },
+          "cardText": {
+            "label": "Card Text",
+            "placeholder": "Detailed capability card text",
+            "promptOnInstall": false
+          },
+          "cardFile": {
+            "label": "Card File",
+            "placeholder": "/absolute/path/to/card.md",
+            "promptOnInstall": false
+          },
+          "credentialsFile": {
+            "label": "Credentials File",
+            "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
+            "promptOnInstall": false
+          },
+          "senderPolicies": {
+            "label": "Sender Policies",
+            "placeholder": "[{\"sender\":\"meegle-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]",
+            "promptOnInstall": true
+          }
+        }
+      }
+    },
     "configSchema": {
       "type": "object",
       "properties": {
