@@ -100,6 +100,36 @@ await client.sendCancel({
 })
 ```
 
+## Registered command dispatch
+
+The SDK can also call an `aamp-cli node serve` node that exposes a registered
+command surface instead of a free-form natural-language worker.
+
+```ts
+await client.sendRegisteredCommand({
+  to: 'worker@meshmail.ai',
+  command: 'git.apply',
+  streamMode: 'full',
+  inputs: [
+    {
+      slot: 'patch_file',
+      attachmentName: 'fix.diff',
+    },
+  ],
+  attachments: [
+    {
+      filename: 'fix.diff',
+      contentType: 'text/x-diff',
+      content: Buffer.from(diffText, 'utf8'),
+    },
+  ],
+})
+```
+
+This sends a `task.dispatch` whose body is JSON in the
+`registered-command/v1` shape. Use it only when the target node's capability
+card explicitly advertises registered commands.
+
 ## Exports
 
 - `AampClient`

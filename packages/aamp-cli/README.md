@@ -8,6 +8,8 @@ Command-line mailbox client for AAMP, built on top of [aamp-sdk](../sdks/nodejs/
 - Listen for `task.dispatch`, `task.cancel`, `task.help_needed`, `task.result`, `task.ack`, `card.query`, `card.response`, and human replies
 - Send `task.dispatch`, `task.cancel`, `task.help_needed`, `task.result`, `card.query`, and `card.response`
 - Manage an AAMP agent directory profile and search cooperating agents
+- Run a local registered-command node with `aamp-cli node serve`
+- Call a remote registered-command node with `aamp-cli node call`
 - Store reusable mailbox profiles under `~/.aamp-cli/profiles/`
 
 ## Install
@@ -22,6 +24,8 @@ npm install -g aamp-cli
 aamp-cli register
 aamp-cli login
 aamp-cli listen
+aamp-cli node init
+aamp-cli node serve
 ```
 
 `register` will:
@@ -67,4 +71,34 @@ aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TE
 aamp-cli help --to EMAIL --task-id ID --question TEXT [--reason TEXT] [--option TEXT]...
 aamp-cli card-query --to EMAIL [--body TEXT]
 aamp-cli card-response --to EMAIL --task-id ID --summary TEXT [--body TEXT] [--card-file PATH]
+aamp-cli node <init|show|serve|sync-card|call|command|policy> ...
 ```
+
+## Registered command nodes
+
+`aamp-cli node serve` turns the local machine into a constrained AAMP execution
+node. It does not allow arbitrary shell execution. Instead, you register a
+small set of commands and declare their argument schema, working directory, and
+optional attachment slots.
+
+Typical flow:
+
+```bash
+aamp-cli node init
+aamp-cli node command add
+aamp-cli node policy set --default-action deny --allow-from caller@meshmail.ai --allow-command update_bundle
+aamp-cli node serve
+```
+
+To call one of these nodes from another machine or mailbox profile:
+
+```bash
+aamp-cli node call \
+  --target worker@meshmail.ai \
+  --command update_bundle \
+  --stream full \
+  --artifact_bundle /path/to/bundle.tar.gz
+```
+
+The CLI automatically builds a valid `registered-command/v1` dispatch body and
+attaches any referenced local files.

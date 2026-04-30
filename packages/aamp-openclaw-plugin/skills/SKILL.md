@@ -210,6 +210,136 @@ the human to respond quickly.
 
 ---
 
+## Registered Command Node Mode
+
+Some AAMP nodes are backed by `aamp-cli node serve` and expose a **registered
+command** surface instead of a free-form natural-language task runner. When
+calling one of these nodes, the `task.dispatch` **email body must be JSON** and
+must follow the schema below:
+
+```json
+{
+  "kind": "registered-command/v1",
+  "command": "git.apply",
+  "args": {},
+  "inputs": [
+    {
+      "slot": "patch_file",
+      "attachmentName": "fix.diff"
+    }
+  ],
+  "stream": {
+    "mode": "full"
+  }
+}
+```
+
+Rules:
+
+1. `kind` must be exactly `registered-command/v1`.
+2. `command` must match the remote node's registered command name from its
+   directory card / capability card.
+3. `args` must conform to the schema published by that node.
+4. `inputs` are optional and only reference attachments already included with
+   the dispatch email. Use them only when the remote command card declares the
+   slot.
+5. Do **not** send raw shell commands, working directories, environment
+   variables, redirections, or arbitrary file paths.
+
+If the registered command declares a file input, attach the file to the email
+and reference it through `inputs[].attachmentName`. Example:
+
+```json
+{
+  "kind": "registered-command/v1",
+  "command": "git.apply",
+  "inputs": [
+    {
+      "slot": "patch_file",
+      "attachmentName": "fix.diff"
+    }
+  ],
+  "stream": {
+    "mode": "full"
+  }
+}
+```
+
+### Expected Result Shape
+
+The remote node replies with a `task.result` whose body is JSON:
+
+```json
+{
+  "kind": "registered-command-result/v1",
+  "command": "git.apply",
+  "status": "completed",
+  "exitCode": 0,
+  "summary": "Command git.apply completed successfully.",
+  "stdout": "",
+  "stderr": "",
+  "truncated": {
+    "stdout": false,
+    "stderr": false
+  },
+  "timing": {
+    "startedAt": "2026-04-27T08:00:00.000Z",
+    "finishedAt": "2026-04-27T08:00:00.420Z",
+    "durationMs": 420
+  }
+}
+```
+
+When `truncated.stdout` or `truncated.stderr` is `true`, the full output may be
+returned as one or more email attachments such as `git.apply-stdout.txt` or
+`git.apply-stderr.txt`. Check the result email attachments in addition to the
+JSON body.
+
+### Stream Expectations
+
+If `stream.mode` is `full` or `status-only`, expect the remote node to send:
+
+- `task.stream.opened`
+- stream `status` events
+- stream `text.delta` events for stdout/stderr when mode is `full`
+- a final stream `done` event before or near the terminal `task.result`
+
+### Detect Node Type via `card.query`
+
+Before dispatching to an unfamiliar AAMP node, send `card.query` and inspect
+the returned card text.
+
+Classify the node as a **registered-command node** only when the card clearly
+advertises the local CLI command surface. In the current implementation, the
+strongest signal is a card body that starts with `# Local Registered Commands`.
+Other supporting signals are:
+
+- one or more command sections like `## git.apply`
+- `- Working directory: ...`
+- `- Exec: ...`
+- embedded JSON blocks for `Args schema` or `Attachment slots`
+
+If those markers are present, treat the node as an `aamp-cli node serve` node
+and send `task.dispatch` with a JSON body shaped like
+`registered-command/v1`.
+
+If those markers are absent, treat the node as a normal **agent node** and
+send a natural-language task request instead of registered-command JSON.
+
+Rules:
+
+1. `card.query` is the source of truth when available. If the directory
+   summary and card disagree, trust the card.
+2. Only use registered-command mode when the card explicitly advertises it.
+   Do not guess.
+3. If the card is missing, empty, or ambiguous, prefer agent-node behavior
+   over registered-command behavior.
+
+Before calling a registered-command node, inspect its card to learn the
+accepted `command` names, argument schemas, and attachment slots.
+
+---
+
 ## Error Handling
 
 - **401** on any endpoint → credentials invalid. Delete the credentials file

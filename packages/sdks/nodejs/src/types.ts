@@ -361,6 +361,8 @@ export interface SendTaskOptions {
   taskId?: string
   title: string
   bodyText?: string
+  /** When set, send the body exactly as provided instead of wrapping it in the default task template. */
+  rawBodyText?: string
   priority?: TaskPriority
   /** Absolute expiry timestamp. */
   expiresAt?: string
@@ -368,6 +370,39 @@ export interface SendTaskOptions {
   dispatchContext?: Record<string, string>
   parentTaskId?: string
   /** Attachments to include with the dispatch email */
+  attachments?: AampAttachment[]
+}
+
+export type RegisteredCommandStreamMode = 'none' | 'status-only' | 'full'
+
+export interface RegisteredCommandInputRef {
+  slot: string
+  attachmentName: string
+}
+
+export interface RegisteredCommandDispatchPayload {
+  kind: 'registered-command/v1'
+  command: string
+  args?: Record<string, unknown>
+  inputs?: RegisteredCommandInputRef[]
+  stream?: {
+    mode?: RegisteredCommandStreamMode
+  }
+}
+
+export interface SendRegisteredCommandOptions {
+  to: string
+  taskId?: string
+  title?: string
+  command: string
+  args?: Record<string, unknown>
+  inputs?: RegisteredCommandInputRef[]
+  streamMode?: RegisteredCommandStreamMode
+  priority?: TaskPriority
+  expiresAt?: string
+  contextLinks?: string[]
+  dispatchContext?: Record<string, string>
+  parentTaskId?: string
   attachments?: AampAttachment[]
 }
 
@@ -386,6 +421,8 @@ export interface SendResultOptions {
   output: string
   errorMsg?: string
   structuredResult?: StructuredResultField[]
+  /** When set, send the body exactly as provided instead of wrapping it in the default result template. */
+  rawBodyText?: string
   /** Message-ID of the dispatch email, for In-Reply-To threading */
   inReplyTo?: string
   /** Attachments to include with the result email */
@@ -399,6 +436,8 @@ export interface SendHelpOptions {
   question: string
   blockedReason: string
   suggestedOptions: string[]
+  /** When set, send the body exactly as provided instead of wrapping it in the default help template. */
+  rawBodyText?: string
   /** Message-ID of the dispatch email, for In-Reply-To threading */
   inReplyTo?: string
   /** Attachments to include with the help email */

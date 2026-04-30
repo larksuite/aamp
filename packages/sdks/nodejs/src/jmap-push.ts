@@ -101,6 +101,32 @@ function describeError(err: unknown): string {
   return parts.join(' | ')
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function shouldRetrySessionFetch(status: number): boolean {
+  return status === 429 || status >= 500
+}
+
+function shouldRetryBlobDownload(status: number): boolean {
+  return status === 404 || status === 429 || status === 503
+}
+
+function rewriteUrlToConfiguredOrigin(rawUrl: string, configuredBaseUrl: string): string {
+  const parsed = new URL(rawUrl)
+  const configured = new URL(configuredBaseUrl)
+  parsed.protocol = configured.protocol
+  parsed.username = configured.username
+  parsed.password = configured.password
+  parsed.hostname = configured.hostname
+  parsed.port = configured.port
+  return parsed.toString()
+}
+
+const SESSION_FETCH_MAX_ATTEMPTS = 3
+const SESSION_FETCH_RETRY_BASE_DELAY_MS = 250
+
 type JmapPushEvents = {
   'task.dispatch': (task: TaskDispatch) => void
   'task.cancel': (task: TaskCancel) => void
@@ -206,20 +232,38 @@ export class JmapPushClient extends TinyEmitter<JmapPushEvents> {
    */
   private async fetchSession(): Promise<JmapSession> {
     const url = `${this.jmapUrl}/.well-known/jmap`
-    let res: Response
-    try {
-      res = await fetch(url, {
-        headers: { Authorization: this.getAuthHeader() },
-      })
-    } catch (err) {
-      throw new Error(`fetchSession ${url} failed: ${describeError(err)}`)
+    let lastError: Error | null = null
+
+    for (let attempt = 1; attempt <= SESSION_FETCH_MAX_ATTEMPTS; attempt += 1) {
+      let res: Response
+      try {
+        res = await fetch(url, {
+          headers: { Authorization: this.getAuthHeader() },
+        })
+      } catch (err) {
+        lastError = new Error(`fetchSession ${url} failed: ${describeError(err)}`)
+        if (attempt >= SESSION_FETCH_MAX_ATTEMPTS) throw lastError
+        await sleep(SESSION_FETCH_RETRY_BASE_DELAY_MS * attempt)
+        continue
+      }
+
+      if (res.ok) {
+        return res.json() as Promise<JmapSession>
+      }
+
+      lastError = new Error(
+        attempt >= SESSION_FETCH_MAX_ATTEMPTS || !shouldRetrySessionFetch(res.status)
+          ? `Failed to fetch JMAP session: ${res.status} ${res.statusText}`
+          : `Failed to fetch JMAP session after ${attempt} attempt(s): ${res.status} ${res.statusText}`,
+      )
+      if (attempt >= SESSION_FETCH_MAX_ATTEMPTS || !shouldRetrySessionFetch(res.status)) {
+        throw lastError
+      }
+
+      await sleep(SESSION_FETCH_RETRY_BASE_DELAY_MS * attempt)
     }
 
-    if (!res.ok) {
-      throw new Error(`Failed to fetch JMAP session: ${res.status} ${res.statusText}`)
-    }
-
-    return res.json() as Promise<JmapSession>
+    throw lastError ?? new Error('Failed to fetch JMAP session')
   }
 
   /**
@@ -773,11 +817,7 @@ export class JmapPushClient extends TinyEmitter<JmapPushEvents> {
     // Replace session.downloadUrl host with our configured jmapUrl
     // (Stalwart may report an internal hostname unreachable from outside Docker)
     try {
-      const parsed = new URL(downloadUrl)
-      const configured = new URL(this.jmapUrl)
-      parsed.protocol = configured.protocol
-      parsed.host = configured.host
-      downloadUrl = parsed.toString()
+      downloadUrl = rewriteUrlToConfiguredOrigin(downloadUrl, this.jmapUrl)
     } catch {
       // If URL parsing fails, use the template as-is
     }
@@ -793,16 +833,37 @@ export class JmapPushClient extends TinyEmitter<JmapPushEvents> {
     // after the result email is observed (store/index write delay).
     const maxAttempts = 8
     let lastStatus: number | null = null
+    let lastError: Error | null = null
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const res = await fetch(downloadUrl, {
-        headers: { Authorization: this.getAuthHeader() },
-      })
+      let res: Response
+      try {
+        res = await fetch(downloadUrl, {
+          headers: { Authorization: this.getAuthHeader() },
+        })
+      } catch (err) {
+        lastError = new Error(
+          `Blob download fetch failed: attempt=${attempt}/${maxAttempts} blobId=${blobId} filename=${filename ?? 'attachment'} url=${downloadUrl} error=${describeError(err)}`,
+        )
+        if (attempt < maxAttempts) {
+          console.warn(
+            `[AAMP-SDK] blob download retry fetch-error attempt=${attempt}/${maxAttempts} url=${downloadUrl} error=${describeError(err)}`,
+          )
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 15000)
+          await new Promise(r => setTimeout(r, delay))
+          continue
+        }
+        console.error(
+          `[AAMP-SDK] blob download fetch-error attempt=${attempt}/${maxAttempts} url=${downloadUrl} error=${describeError(err)}`,
+        )
+        throw lastError
+      }
+
       lastStatus = res.status
       if (res.ok) {
         const arrayBuffer = await res.arrayBuffer()
         return Buffer.from(arrayBuffer)
       }
-      if (attempt < maxAttempts && (res.status === 404 || res.status === 429 || res.status === 503)) {
+      if (attempt < maxAttempts && shouldRetryBlobDownload(res.status)) {
         console.warn(
           `[AAMP-SDK] blob download retry status=${res.status} attempt=${attempt}/${maxAttempts} url=${downloadUrl}`,
         )
@@ -817,6 +878,7 @@ export class JmapPushClient extends TinyEmitter<JmapPushEvents> {
         `Blob download failed: status=${res.status} attempt=${attempt}/${maxAttempts} blobId=${blobId} filename=${filename ?? 'attachment'} url=${downloadUrl}`,
       )
     }
+    if (lastError) throw lastError
     throw new Error(
       `Blob download failed after retries: status=${lastStatus ?? 'unknown'} attempt=${maxAttempts}/${maxAttempts} blobId=${blobId} filename=${filename ?? 'attachment'} url=${downloadUrl}`,
     )

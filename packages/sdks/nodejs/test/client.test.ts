@@ -186,6 +186,45 @@ describe('AampClient', () => {
     })
   })
 
+  it('builds registered-command dispatch bodies through the SDK helper', async () => {
+    const { AampClient } = await import('../src/client.js')
+    const client = new AampClient({
+      email: 'agent@meshmail.ai',
+      mailboxToken: Buffer.from('agent@meshmail.ai:password-1').toString('base64'),
+      baseUrl: 'https://meshmail.ai',
+    })
+
+    await client.sendRegisteredCommand({
+      to: 'worker@meshmail.ai',
+      command: 'git.apply',
+      args: { mode: 'check' },
+      inputs: [{ slot: 'patch_file', attachmentName: 'fix.diff' }],
+      attachments: [{
+        filename: 'fix.diff',
+        contentType: 'text/plain',
+        content: Buffer.from('diff --git a/file b/file'),
+      }],
+      streamMode: 'status-only',
+      dispatchContext: { project_key: 'proj-1' },
+    })
+
+    expect(lastSmtpSender!.sendTask).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'worker@meshmail.ai',
+      title: 'Registered command: git.apply',
+      dispatchContext: { project_key: 'proj-1' },
+      attachments: [expect.objectContaining({ filename: 'fix.diff' })],
+    }))
+
+    const rawBodyText = String(lastSmtpSender!.sendTask.mock.calls[0][0].rawBodyText)
+    expect(JSON.parse(rawBodyText)).toEqual({
+      kind: 'registered-command/v1',
+      command: 'git.apply',
+      args: { mode: 'check' },
+      inputs: [{ slot: 'patch_file', attachmentName: 'fix.diff' }],
+      stream: { mode: 'status-only' },
+    })
+  })
+
   it('registers a mailbox through discovered AAMP endpoints', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ api: { url: '/api/aamp' } })))

@@ -55,9 +55,11 @@ import type {
   HydratedTaskDispatch,
   RegisterMailboxOptions,
   RegisteredMailboxIdentity,
+  RegisteredCommandDispatchPayload,
   SendCardQueryOptions,
   SendCardResponseOptions,
   SendCancelOptions,
+  SendRegisteredCommandOptions,
   StreamSubscription,
   TaskCancel,
   TaskDispatch,
@@ -73,6 +75,35 @@ import type {
   SendHelpOptions,
   UpdateDirectoryProfileOptions,
 } from './types.js'
+
+function buildRegisteredCommandDispatchPayload(
+  opts: Pick<SendRegisteredCommandOptions, 'command' | 'args' | 'inputs' | 'streamMode'>,
+): RegisteredCommandDispatchPayload {
+  const command = opts.command.trim()
+  if (!command) {
+    throw new Error('Registered command name cannot be empty.')
+  }
+
+  if (opts.args != null && (typeof opts.args !== 'object' || Array.isArray(opts.args))) {
+    throw new Error('Registered command args must be an object when provided.')
+  }
+
+  if (opts.inputs) {
+    for (const input of opts.inputs) {
+      if (!input.slot?.trim() || !input.attachmentName?.trim()) {
+        throw new Error('Each registered command input must include slot and attachmentName.')
+      }
+    }
+  }
+
+  return {
+    kind: 'registered-command/v1',
+    command,
+    ...(opts.args && Object.keys(opts.args).length > 0 ? { args: opts.args } : {}),
+    ...(opts.inputs?.length ? { inputs: opts.inputs } : {}),
+    stream: { mode: opts.streamMode ?? 'full' },
+  }
+}
 
 type StreamAppendOperation =
   | {
@@ -341,6 +372,22 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
    */
   async sendTask(opts: SendTaskOptions): Promise<{ taskId: string; messageId: string }> {
     return this.smtpSender.sendTask(opts)
+  }
+
+  async sendRegisteredCommand(opts: SendRegisteredCommandOptions): Promise<{ taskId: string; messageId: string }> {
+    const payload = buildRegisteredCommandDispatchPayload(opts)
+    return this.smtpSender.sendTask({
+      to: opts.to,
+      taskId: opts.taskId,
+      title: opts.title?.trim() || `Registered command: ${payload.command}`,
+      rawBodyText: JSON.stringify(payload, null, 2),
+      priority: opts.priority,
+      expiresAt: opts.expiresAt,
+      contextLinks: opts.contextLinks,
+      dispatchContext: opts.dispatchContext,
+      parentTaskId: opts.parentTaskId,
+      attachments: opts.attachments,
+    })
   }
 
   async sendCancel(opts: SendCancelOptions): Promise<void> {

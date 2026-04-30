@@ -378,7 +378,7 @@ export class SmtpSender {
       from: this.config.user,
       to: opts.to,
       subject: `[AAMP Task] ${sanitize(opts.title)}`,
-      text: [
+      text: opts.rawBodyText ?? [
         `Task: ${opts.title}`,
         `Task ID: ${taskId}`,
         `Priority: ${opts.priority ?? 'normal'}`,
@@ -455,7 +455,7 @@ export class SmtpSender {
       from: this.config.user,
       to: opts.to,
       subject: `[AAMP Result] Task ${opts.taskId} — ${opts.status}`,
-      text: [
+      text: opts.rawBodyText ?? [
         `AAMP Task Result`,
         ``,
         `Task ID: ${opts.taskId}`,
@@ -533,7 +533,7 @@ export class SmtpSender {
       from: this.config.user,
       to: opts.to,
       subject: `[AAMP Help] Task ${opts.taskId} needs assistance`,
-      text: [
+      text: opts.rawBodyText ?? [
         `AAMP Task Help Request`,
         ``,
         `Task ID: ${opts.taskId}`,

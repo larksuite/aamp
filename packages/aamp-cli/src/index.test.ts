@@ -8,6 +8,7 @@ class FakeClient {
   private handlers = new Map<string, Array<(...args: any[]) => void>>()
   email = 'agent@meshmail.ai'
   sendTask = vi.fn().mockResolvedValue({ taskId: 'task-1', messageId: 'msg-1' })
+  sendRegisteredCommand = vi.fn().mockResolvedValue({ taskId: 'task-cmd-1', messageId: 'msg-cmd-1' })
   sendResult = vi.fn().mockResolvedValue(undefined)
   sendHelp = vi.fn().mockResolvedValue(undefined)
   sendCancel = vi.fn().mockResolvedValue(undefined)
@@ -39,6 +40,7 @@ const renderThreadHistoryForAgent = vi.fn((events: Array<{ question?: string }>)
   events.length ? `Prior thread context:\n- ${events[0]?.question ?? 'event'}` : ''
 ))
 let tempHome = ''
+let promptAnswers: string[] = []
 
 describe('aamp-cli helpers', () => {
   beforeEach(() => {
@@ -50,6 +52,7 @@ describe('aamp-cli helpers', () => {
     registerMailbox.mockReset()
     fromMailboxIdentity.mockReset()
     fromMailboxIdentity.mockImplementation(() => new FakeClient())
+    promptAnswers = []
 
     vi.doMock('aamp-sdk', () => ({
       AampClient: {
@@ -57,6 +60,18 @@ describe('aamp-cli helpers', () => {
         fromMailboxIdentity,
       },
       renderThreadHistoryForAgent,
+    }))
+    vi.doMock('node:readline/promises', () => ({
+      default: {
+        createInterface: () => ({
+          question: async () => promptAnswers.shift() ?? '',
+          close: () => {},
+        }),
+      },
+      createInterface: () => ({
+        question: async () => promptAnswers.shift() ?? '',
+        close: () => {},
+      }),
     }))
   })
 
@@ -112,6 +127,120 @@ describe('aamp-cli helpers', () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"profile": "demo"'))
   })
 
+  it('node init reuses the default cached mailbox when email is omitted', async () => {
+    const profilePath = path.join(tempHome, '.aamp-cli', 'profiles', 'default.json')
+    await mkdir(path.dirname(profilePath), { recursive: true })
+    await writeFile(profilePath, JSON.stringify({
+      email: 'cached@meshmail.ai',
+      smtpPassword: 'cached-smtp',
+      baseUrl: 'https://meshmail.ai',
+      smtpHost: 'meshmail.ai',
+      smtpPort: 587,
+      rejectUnauthorized: true,
+    }), 'utf8')
+
+    const cli = await import('./index.ts')
+    await cli.runNodeInit(cli.parseArgs(['node', 'init']))
+
+    const nodeConfig = JSON.parse(readFileSync(path.join(tempHome, '.aamp-cli', 'nodes', 'default.json'), 'utf8'))
+    expect(nodeConfig.mailbox.email).toBe('cached@meshmail.ai')
+    expect(registerMailbox).not.toHaveBeenCalled()
+  })
+
+  it('node init can auto-register a mailbox when no cache exists', async () => {
+    registerMailbox.mockResolvedValue({
+      email: 'newly-registered@meshmail.ai',
+      smtpPassword: 'smtp-new',
+      mailboxToken: 'mailbox-token',
+      baseUrl: 'https://meshmail.ai',
+    })
+    promptAnswers = ['yes', 'https://meshmail.ai', 'local-worker']
+
+    const cli = await import('./index.ts')
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await cli.runNodeInit(cli.parseArgs(['node', 'init']))
+
+    expect(registerMailbox).toHaveBeenCalledWith(expect.objectContaining({
+      aampHost: 'https://meshmail.ai',
+      slug: 'local-worker',
+    }))
+    const nodeConfig = JSON.parse(readFileSync(path.join(tempHome, '.aamp-cli', 'nodes', 'default.json'), 'utf8'))
+    expect(nodeConfig.mailbox.email).toBe('newly-registered@meshmail.ai')
+    const cachedProfile = JSON.parse(readFileSync(path.join(tempHome, '.aamp-cli', 'profiles', 'default.json'), 'utf8'))
+    expect(cachedProfile.email).toBe('newly-registered@meshmail.ai')
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Registered new mailbox newly-registered@meshmail.ai'))
+  })
+
+  it('node command add can build and persist a command interactively', async () => {
+    const nodeConfigPath = path.join(tempHome, '.aamp-cli', 'nodes', 'default.json')
+    await mkdir(path.dirname(nodeConfigPath), { recursive: true })
+    await writeFile(nodeConfigPath, JSON.stringify({
+      version: 1,
+      mailbox: {
+        email: 'cached@meshmail.ai',
+        smtpPassword: 'cached-smtp',
+        baseUrl: 'https://meshmail.ai',
+        smtpHost: 'meshmail.ai',
+        smtpPort: 587,
+        rejectUnauthorized: true,
+      },
+      commands: [],
+      senderPolicy: {
+        defaultAction: 'deny',
+        allowFrom: [],
+        allowCommands: [],
+        requireContext: {},
+      },
+    }), 'utf8')
+
+    const fakeBinDir = mkdtempSync(path.join(os.tmpdir(), 'aamp-cli-bin-'))
+    const fakeGit = path.join(fakeBinDir, 'git')
+    await writeFile(fakeGit, '#!/bin/sh\nexit 0\n', 'utf8')
+    const previousPath = process.env.PATH
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ''}`
+
+    promptAnswers = [
+      'git apply [patch_file]',
+      fakeGit,
+      'git.apply',
+      'Apply a patch file',
+      '/tmp/workspace',
+      '30000',
+      '65536',
+      '65536',
+      'file',
+      '2097152',
+      'application/octet-stream,text/plain',
+      'yes',
+    ]
+
+    const cli = await import('./index.ts')
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await cli.runNodeCommandAdd(cli.parseArgs(['node', 'command', 'add']))
+
+    const nodeConfig = JSON.parse(readFileSync(nodeConfigPath, 'utf8'))
+    expect(nodeConfig.commands).toHaveLength(1)
+    expect(nodeConfig.commands[0]).toMatchObject({
+      name: 'git.apply',
+      exec: fakeGit,
+      argsTemplate: ['apply', '{{inputs.patch_file.path}}'],
+      workingDirectory: '/tmp/workspace',
+    })
+    expect(nodeConfig.commands[0].attachments.patch_file).toMatchObject({
+      required: true,
+      maxBytes: 2097152,
+    })
+
+    const specPath = path.join(tempHome, '.aamp-cli', 'nodes', 'default.commands', 'git.apply.json')
+    const savedSpec = JSON.parse(readFileSync(specPath, 'utf8'))
+    expect(savedSpec.name).toBe('git.apply')
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Saved command spec'))
+
+    process.env.PATH = previousPath
+  })
+
   it('dispatches tasks through the SDK client', async () => {
     const cli = await import('./index.ts')
     const profilePath = path.join(tempHome, '.aamp-cli', 'profiles', 'default.json')
@@ -145,6 +274,151 @@ describe('aamp-cli helpers', () => {
       contextLinks: ['https://example.com/pr/42'],
     }))
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"taskId": "task-1"'))
+  })
+
+  it('parses equals-style flags and sends registered-command calls through the SDK client', async () => {
+    const nodeConfigPath = path.join(tempHome, '.aamp-cli', 'nodes', 'default.json')
+    await mkdir(path.dirname(nodeConfigPath), { recursive: true })
+    await writeFile(nodeConfigPath, JSON.stringify({
+      version: 1,
+      mailbox: {
+        email: 'caller@meshmail.ai',
+        smtpPassword: 'caller-smtp',
+        baseUrl: 'https://meshmail.ai',
+        smtpHost: 'meshmail.ai',
+        smtpPort: 587,
+        rejectUnauthorized: true,
+      },
+      commands: [],
+      senderPolicy: {
+        defaultAction: 'deny',
+        allowFrom: [],
+        allowCommands: [],
+        requireContext: {},
+      },
+    }), 'utf8')
+
+    const patchFile = path.join(tempHome, 'fix.diff')
+    await writeFile(patchFile, 'diff --git a/file b/file\n', 'utf8')
+
+    const cli = await import('./index.ts')
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await cli.runNodeCall(cli.parseArgs([
+      'node',
+      'call',
+      '--target=worker@meshmail.ai',
+      '--command=git.apply',
+      '--stream=status-only',
+      '--mode=check',
+      `--patch_file=${patchFile}`,
+      '--dispatch-context=project_key=proj-1',
+    ]))
+
+    const client = fromMailboxIdentity.mock.results[0].value as FakeClient
+    expect(client.sendRegisteredCommand).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'worker@meshmail.ai',
+      command: 'git.apply',
+      streamMode: 'status-only',
+      dispatchContext: { project_key: 'proj-1' },
+      args: { mode: 'check' },
+      inputs: [{ slot: 'patch_file', attachmentName: 'fix.diff' }],
+    }))
+    expect(client.sendRegisteredCommand.mock.calls[0][0].attachments).toEqual([
+      expect.objectContaining({
+        filename: 'fix.diff',
+        contentType: 'text/x-diff',
+      }),
+    ])
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"command": "git.apply"'))
+  })
+
+  it('infers application/zip for zip attachments in node call', async () => {
+    const nodeConfigPath = path.join(tempHome, '.aamp-cli', 'nodes', 'default.json')
+    await mkdir(path.dirname(nodeConfigPath), { recursive: true })
+    await writeFile(nodeConfigPath, JSON.stringify({
+      version: 1,
+      mailbox: {
+        email: 'caller@meshmail.ai',
+        smtpPassword: 'caller-smtp',
+        baseUrl: 'https://meshmail.ai',
+        smtpHost: 'meshmail.ai',
+        smtpPort: 587,
+        rejectUnauthorized: true,
+      },
+      commands: [],
+      senderPolicy: {
+        defaultAction: 'deny',
+        allowFrom: [],
+        allowCommands: [],
+        requireContext: {},
+      },
+    }), 'utf8')
+
+    const zipFile = path.join(tempHome, 'bundle-errorcode.zip')
+    await writeFile(zipFile, 'fake zip bytes', 'utf8')
+
+    const cli = await import('./index.ts')
+
+    await cli.runNodeCall(cli.parseArgs([
+      'node',
+      'call',
+      '--target=worker@meshmail.ai',
+      '--command=update_bundle',
+      `--artifact_bundle=${zipFile}`,
+    ]))
+
+    const client = fromMailboxIdentity.mock.results[0].value as FakeClient
+    expect(client.sendRegisteredCommand.mock.calls[0][0].attachments).toEqual([
+      expect.objectContaining({
+        filename: 'bundle-errorcode.zip',
+        contentType: 'application/zip',
+      }),
+    ])
+  })
+
+  it('infers application/gzip for tar.gz attachments in node call', async () => {
+    const nodeConfigPath = path.join(tempHome, '.aamp-cli', 'nodes', 'default.json')
+    await mkdir(path.dirname(nodeConfigPath), { recursive: true })
+    await writeFile(nodeConfigPath, JSON.stringify({
+      version: 1,
+      mailbox: {
+        email: 'caller@meshmail.ai',
+        smtpPassword: 'caller-smtp',
+        baseUrl: 'https://meshmail.ai',
+        smtpHost: 'meshmail.ai',
+        smtpPort: 587,
+        rejectUnauthorized: true,
+      },
+      commands: [],
+      senderPolicy: {
+        defaultAction: 'deny',
+        allowFrom: [],
+        allowCommands: [],
+        requireContext: {},
+      },
+    }), 'utf8')
+
+    const tgzFile = path.join(tempHome, 'artifact-bundle.tar.gz')
+    await writeFile(tgzFile, 'fake tgz bytes', 'utf8')
+
+    const cli = await import('./index.ts')
+
+    await cli.runNodeCall(cli.parseArgs([
+      'node',
+      'call',
+      '--target=worker@meshmail.ai',
+      '--command=update_bundle',
+      `--artifact_bundle=${tgzFile}`,
+    ]))
+
+    const client = fromMailboxIdentity.mock.results[0].value as FakeClient
+    expect(client.sendRegisteredCommand.mock.calls[0][0].attachments).toEqual([
+      expect.objectContaining({
+        filename: 'artifact-bundle.tar.gz',
+        contentType: 'application/gzip',
+      }),
+    ])
   })
 
   it('logs inbound dispatch and result events for listen mode', async () => {
