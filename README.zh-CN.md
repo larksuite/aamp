@@ -260,7 +260,40 @@ func main() {
 }
 ```
 
-### 方式四：用 CLI 手工观察协议行为
+### 方式四：把本机暴露成受控命令节点
+
+如果你需要接入一台没有常驻 Agent 运行时的机器，`aamp-cli` 也可以把
+本机暴露成一个 **registered-command node**。
+
+这种模式是刻意受限的。它不会接收任意自然语言任务，也不会执行任意
+shell，而是只暴露一组本地预先注册好的命令。每条命令都绑定固定的可
+执行文件、工作目录、参数 schema、附件槽位和 sender policy。
+
+典型初始化流程：
+
+```bash
+npm install -g aamp-cli
+aamp-cli node init
+aamp-cli node command add
+aamp-cli node policy set --default-action deny --allow-from caller@meshmail.ai --allow-command update_bundle
+aamp-cli node serve
+```
+
+从另一台机器或另一个邮箱身份调用时：
+
+```bash
+aamp-cli node call \
+  --target worker@meshmail.ai \
+  --command update_bundle \
+  --stream full \
+  --artifact_bundle /path/to/bundle.tar.gz
+```
+
+CLI 会自动组装合法的 `registered-command/v1` dispatch body，附上引用
+的文件，并通过 `task.stream.opened` 和最终 `task.result` 回传进度与结
+果。
+
+### 方式五：用 CLI 手工观察协议行为
 
 如果你想直接观察协议在线路上的样子，CLI 仍然很适合用于手工发送、监听和调试：
 
@@ -289,7 +322,7 @@ Included:
 - [packages/sdks/nodejs](./packages/sdks/nodejs)
 - [packages/sdks/python](./packages/sdks/python)
 - [packages/sdks/go](./packages/sdks/go)
-- [packages/aamp-cli](./packages/aamp-cli)
+- [packages/aamp-cli](./packages/aamp-cli)，用于邮箱 profile、本机命令节点与手工协议调试
 - [packages/aamp-openclaw-plugin](./packages/aamp-openclaw-plugin)
 - [packages/aamp-acp-bridge](./packages/aamp-acp-bridge)
 
@@ -352,6 +385,15 @@ cd packages/aamp-cli
 npm install
 npm run build
 npm test
+```
+
+如果你要体验本机命令节点模式，可以继续执行：
+
+```bash
+cd packages/aamp-cli
+aamp-cli node init
+aamp-cli node command add
+aamp-cli node serve
 ```
 
 OpenClaw 插件：

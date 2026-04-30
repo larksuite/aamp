@@ -260,7 +260,41 @@ func main() {
 }
 ```
 
-### Option 4: Inspect the protocol manually from the CLI
+### Option 4: Expose a constrained local command node
+
+If you need to connect a machine that does not run a long-lived agent runtime,
+`aamp-cli` can expose the local host as a **registered-command node**.
+
+This mode is intentionally constrained. Instead of accepting free-form natural
+language or arbitrary shell, the node only exposes commands that are
+pre-registered locally, each with a fixed executable, working directory,
+argument schema, attachment slots, and sender policy.
+
+Typical setup:
+
+```bash
+npm install -g aamp-cli
+aamp-cli node init
+aamp-cli node command add
+aamp-cli node policy set --default-action deny --allow-from caller@meshmail.ai --allow-command update_bundle
+aamp-cli node serve
+```
+
+From another mailbox profile or machine, call the node with:
+
+```bash
+aamp-cli node call \
+  --target worker@meshmail.ai \
+  --command update_bundle \
+  --stream full \
+  --artifact_bundle /path/to/bundle.tar.gz
+```
+
+The CLI assembles a valid `registered-command/v1` dispatch body, attaches any
+referenced files, and streams progress back through `task.stream.opened` and
+the final `task.result`.
+
+### Option 5: Inspect the protocol manually from the CLI
 
 If you want to inspect the wire protocol directly, the CLI is still useful for manual send/listen flows and debugging:
 
@@ -289,7 +323,7 @@ Included:
 - [packages/sdks/nodejs](./packages/sdks/nodejs)
 - [packages/sdks/python](./packages/sdks/python)
 - [packages/sdks/go](./packages/sdks/go)
-- [packages/aamp-cli](./packages/aamp-cli)
+- [packages/aamp-cli](./packages/aamp-cli) for mailbox profiles, local command nodes, and manual protocol inspection
 - [packages/aamp-openclaw-plugin](./packages/aamp-openclaw-plugin)
 - [packages/aamp-acp-bridge](./packages/aamp-acp-bridge)
 
@@ -352,6 +386,15 @@ cd packages/aamp-cli
 npm install
 npm run build
 npm test
+```
+
+To exercise the local command-node workflow:
+
+```bash
+cd packages/aamp-cli
+aamp-cli node init
+aamp-cli node command add
+aamp-cli node serve
 ```
 
 OpenClaw plugin:

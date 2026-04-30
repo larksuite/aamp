@@ -304,6 +304,13 @@ Dispatch context is not identity. A receiver MUST NOT rely solely on `X-AAMP-Dis
 
 In the current reference deployment, external sender trust is grounded in successful DKIM verification at the mail transport layer. This specification does not mandate DKIM specifically, but it does require some equivalent transport-authenticated trust basis.
 
+Some deployments may expose a constrained local execution surface through
+deployment-specific helper tooling, such as a registered-command node backed by
+pre-registered executables and attachment slots. Such behavior is outside the
+core wire protocol, but implementations that offer it SHOULD avoid arbitrary
+shell evaluation, SHOULD constrain working directories and file inputs, and
+SHOULD apply explicit sender authorization before local execution.
+
 ## 11. Privacy Considerations
 
 Task bodies, attachments, and structured result payloads may contain sensitive information. Implementations SHOULD avoid placing personal or business-sensitive data in headers unless required for routing, and SHOULD apply mailbox retention, access control, encryption, and audit policies appropriate to their environment.
