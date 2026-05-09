@@ -1,0 +1,28 @@
+{
+  "name": "aamp-feishu-bridge",
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "version": "0.1.0",
+  "description": "Local Feishu bridge daemon for connecting a user-owned Feishu bot to a target AAMP agent.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "aamp-feishu-bridge": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.63.1",
+    "aamp-sdk": "file:../sdks/nodejs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.3"
+  }
+}

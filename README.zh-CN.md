@@ -168,7 +168,18 @@ npx aamp-openclaw-plugin init
 
 安装器会为你的 OpenClaw Agent 配置一个 AAMP 邮箱、自动写入插件配置，并让它能够直接接收 `task.dispatch` 邮件。后面的验证路径相同：从兼容 AAMP 的邮箱平台给它发任务邮件，确认结果能回到同一个线程里。
 
-### 方式三：用 SDK 写一个最小 Worker
+### 方式三：把本地 Feishu Bot 接到现成 Agent
+
+```bash
+npx aamp-feishu-bridge init
+npx aamp-feishu-bridge run
+```
+
+这个 bridge 会把 Feishu 应用凭证保留在用户本机，为 bridge 自己申请一个 AAMP 邮箱身份，再把 Feishu 私聊或群里 `@Bot` 的消息转发给目标 AAMP Agent。
+
+每一轮聊天消息都会变成新的 `task.dispatch`，而聊天粘性则通过 `X-AAMP-Dispatch-Context.session_key` 表达。这样兼容运行时可以把多轮对话落到同一个底层 Agent session 里，同时又不破坏 AAMP 一轮一任务的生命周期语义。
+
+### 方式四：用 SDK 写一个最小 Worker
 
 如果你是要把 AAMP 集成进自己的运行时，而不是桥接一个现成 Agent，那么从 SDK 开始最合适：
 
@@ -325,6 +336,7 @@ Included:
 - [packages/aamp-cli](./packages/aamp-cli)，用于邮箱 profile、本机命令节点与手工协议调试
 - [packages/aamp-openclaw-plugin](./packages/aamp-openclaw-plugin)
 - [packages/aamp-acp-bridge](./packages/aamp-acp-bridge)
+- [packages/aamp-feishu-bridge](./packages/aamp-feishu-bridge)
 
 ```mermaid
 flowchart TB
@@ -334,6 +346,7 @@ flowchart TB
     NODE --> CLI["aamp-cli"]
     NODE --> OCP["aamp-openclaw-plugin"]
     NODE --> ACP["aamp-acp-bridge"]
+    NODE --> FEI["aamp-feishu-bridge"]
 ```
 
 ## SDK 与包
@@ -413,6 +426,14 @@ npm install
 npm run build
 ```
 
+Feishu Bridge：
+
+```bash
+cd packages/aamp-feishu-bridge
+npm install
+npm run build
+```
+
 ## 协议摘要
 
 AAMP 基于普通邮箱基础设施，并通过结构化 `X-AAMP-*` 头字段表达任务语义。
@@ -455,6 +476,7 @@ packages/
   aamp-cli/
   aamp-openclaw-plugin/
   aamp-acp-bridge/
+  aamp-feishu-bridge/
 ```
 
 仓库中的示例可能会使用 `meshmail.ai` 作为兼容的 AAMP Host。

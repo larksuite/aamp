@@ -168,7 +168,18 @@ npx aamp-openclaw-plugin init
 
 The installer will provision an AAMP mailbox for your OpenClaw agent, write the plugin config automatically, and make the agent ready to receive `task.dispatch` mail. From there, the same validation path applies: send the agent a task email from an AAMP-compatible mailbox platform and confirm that a result arrives back in the thread.
 
-### Option 3: Build a minimal worker with the SDK
+### Option 3: Connect a local Feishu bot to an existing agent
+
+```bash
+npx aamp-feishu-bridge init
+npx aamp-feishu-bridge run
+```
+
+This bridge keeps the Feishu app credentials on the user's own machine, provisions a mailbox identity for the bridge itself, and forwards Feishu direct messages or `@Bot` group messages to a target AAMP agent.
+
+Each message turn is sent as a fresh `task.dispatch`, while sticky chat continuity is carried through `X-AAMP-Dispatch-Context.session_key`. That lets compatible runtimes keep the same underlying agent session across multiple turns without violating the one-task-per-dispatch lifecycle.
+
+### Option 4: Build a minimal worker with the SDK
 
 If you are integrating AAMP into your own runtime instead of bridging an existing agent, start with the SDK:
 
@@ -326,6 +337,7 @@ Included:
 - [packages/aamp-cli](./packages/aamp-cli) for mailbox profiles, local command nodes, and manual protocol inspection
 - [packages/aamp-openclaw-plugin](./packages/aamp-openclaw-plugin)
 - [packages/aamp-acp-bridge](./packages/aamp-acp-bridge)
+- [packages/aamp-feishu-bridge](./packages/aamp-feishu-bridge)
 
 ```mermaid
 flowchart TB
@@ -335,6 +347,7 @@ flowchart TB
     NODE --> CLI["aamp-cli"]
     NODE --> OCP["aamp-openclaw-plugin"]
     NODE --> ACP["aamp-acp-bridge"]
+    NODE --> FEI["aamp-feishu-bridge"]
 ```
 
 ## SDKs and Packages
@@ -414,6 +427,14 @@ npm install
 npm run build
 ```
 
+Feishu bridge:
+
+```bash
+cd packages/aamp-feishu-bridge
+npm install
+npm run build
+```
+
 ## Protocol Summary
 
 AAMP uses ordinary mailbox infrastructure plus structured `X-AAMP-*` headers.
@@ -456,6 +477,7 @@ packages/
   aamp-cli/
   aamp-openclaw-plugin/
   aamp-acp-bridge/
+  aamp-feishu-bridge/
 ```
 
 Examples in this repo may reference `meshmail.ai` as a compatible AAMP host.
