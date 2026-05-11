@@ -4,7 +4,7 @@
     "dist"
   ],
   "license": "MIT",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local Feishu bridge daemon for connecting a user-owned Feishu bot to a target AAMP agent.",
   "type": "module",
   "main": "dist/index.js",

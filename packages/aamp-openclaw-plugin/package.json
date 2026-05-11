@@ -7,7 +7,7 @@
     "skills"
   ],
   "license": "MIT",
-  "version": "0.1.36",
+  "version": "0.1.38",
   "description": "AAMP Agent Mail Protocol — OpenClaw plugin. Gives OpenClaw an AAMP mailbox identity and lets it receive, process and reply to AAMP tasks.",
   "type": "module",
   "main": "dist/index.js",
