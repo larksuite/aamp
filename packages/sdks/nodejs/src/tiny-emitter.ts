@@ -1,4 +1,4 @@
-type Listener = (...args: unknown[]) => void
+type Listener = (...args: unknown[]) => unknown
 type EventListener<Events, K extends keyof Events> =
   Extract<Events[K], (...args: any[]) => void>
 type EventArgs<Events, K extends keyof Events> =
@@ -42,6 +42,22 @@ export class TinyEmitter<Events extends object> {
 
     for (const listener of [...bucket]) {
       listener(...args)
+    }
+    return true
+  }
+
+  protected async emitAsync<K extends keyof Events>(event: K, ...args: EventArgs<Events, K>): Promise<boolean> {
+    const bucket = this.listeners.get(event)
+    if (!bucket || bucket.size === 0) return false
+
+    const settled = await Promise.allSettled(
+      [...bucket].map((listener) => Promise.resolve(listener(...args))),
+    )
+    const rejected = settled.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    )
+    if (rejected) {
+      throw rejected.reason
     }
     return true
   }

@@ -101,6 +101,7 @@ AAMP reserves headers for machine-readable metadata. Human-readable instructions
 | --- | --- | --- |
 | `X-AAMP-Priority` | `task.dispatch` | Scheduling hint with values `urgent`, `high`, or `normal`. |
 | `X-AAMP-Expires-At` | `task.dispatch` | Absolute ISO 8601 timestamp after which the task SHOULD be treated as stale. |
+| `X-AAMP-Session-Key` | `task.dispatch` | Stable conversation or routing key for runtimes that should reuse an underlying agent session across multiple task turns. |
 | `X-AAMP-ContextLinks` | `task.dispatch` | Comma-separated list of absolute URIs describing external task context. |
 | `X-AAMP-Dispatch-Context` | `task.dispatch` | Percent-encoded semicolon-separated key-value pairs for portable routing or authorization context. |
 | `X-AAMP-ParentTaskId` | `task.dispatch` | Optional parent task identifier for nested workflows. |
@@ -116,6 +117,8 @@ Keys in `X-AAMP-Dispatch-Context` SHOULD consist only of lowercase ASCII letters
 ```text
 X-AAMP-Dispatch-Context: project_key=proj_123; user_key=alice; tenant_id=acme
 ```
+
+Session continuity SHOULD be expressed with `X-AAMP-Session-Key` rather than by placing session identifiers in `X-AAMP-Dispatch-Context`. `X-AAMP-TaskId` remains unique to an individual dispatch lifecycle; the session key only hints that multiple dispatches belong to the same higher-level conversation.
 
 ## 6. Lifecycle Intents
 

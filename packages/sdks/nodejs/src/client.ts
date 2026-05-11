@@ -105,6 +105,18 @@ function buildRegisteredCommandDispatchPayload(
   }
 }
 
+const DEFAULT_TASK_DISPATCH_CONCURRENCY = 10
+
+function normalizeTaskDispatchConcurrency(value: number | undefined): number {
+  if (value == null) return DEFAULT_TASK_DISPATCH_CONCURRENCY
+
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    throw new Error('taskDispatchConcurrency must be a positive integer')
+  }
+
+  return value
+}
+
 type StreamAppendOperation =
   | {
     kind: 'text-delta-batch'
@@ -128,6 +140,9 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
   private jmapClient: JmapPushClient
   private smtpSender: SmtpSender
   private readonly config: AampClientConfig
+  private readonly taskDispatchConcurrency: number
+  private readonly pendingTaskDispatches: TaskDispatch[] = []
+  private activeTaskDispatchCount = 0
   private readonly streamAppendQueues = new Map<string, {
     running: boolean
     operations: StreamAppendOperation[]
@@ -136,6 +151,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
   constructor(config: AampClientConfig) {
     super()
     this.config = config
+    this.taskDispatchConcurrency = normalizeTaskDispatchConcurrency(config.taskDispatchConcurrency)
 
     const mailboxToken = config.mailboxToken
     const resolvedBaseUrl = config.baseUrl
@@ -175,7 +191,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
 
     // Forward JMAP events to this emitter
     this.jmapClient.on('task.dispatch', (task: TaskDispatch) => {
-      this.emit('task.dispatch', task)
+      this.enqueueTaskDispatch(task)
     })
 
     this.jmapClient.on('task.cancel', (task: TaskCancel) => {
@@ -242,6 +258,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       smtpPort: config.smtpPort ?? 587,
       smtpPassword: config.smtpPassword,
       reconnectInterval: config.reconnectInterval,
+      taskDispatchConcurrency: config.taskDispatchConcurrency,
       rejectUnauthorized: config.rejectUnauthorized,
     })
   }
@@ -383,6 +400,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       rawBodyText: JSON.stringify(payload, null, 2),
       priority: opts.priority,
       expiresAt: opts.expiresAt,
+      sessionKey: opts.sessionKey,
       contextLinks: opts.contextLinks,
       dispatchContext: opts.dispatchContext,
       parentTaskId: opts.parentTaskId,
@@ -537,6 +555,36 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       throw new Error(`AAMP stream create failed: ${res.status} ${body || res.statusText}`)
     }
     return res.json() as Promise<CreateStreamResult>
+  }
+
+  private enqueueTaskDispatch(task: TaskDispatch): void {
+    this.pendingTaskDispatches.push(task)
+    this.drainTaskDispatchQueue()
+  }
+
+  private drainTaskDispatchQueue(): void {
+    while (
+      this.activeTaskDispatchCount < this.taskDispatchConcurrency
+      && this.pendingTaskDispatches.length > 0
+    ) {
+      const nextTask = this.pendingTaskDispatches.shift()
+      if (!nextTask) return
+
+      this.activeTaskDispatchCount += 1
+      void this.runTaskDispatch(nextTask)
+    }
+  }
+
+  private async runTaskDispatch(task: TaskDispatch): Promise<void> {
+    try {
+      await this.emitAsync('task.dispatch', task)
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      this.emit('error', error)
+    } finally {
+      this.activeTaskDispatchCount = Math.max(0, this.activeTaskDispatchCount - 1)
+      this.drainTaskDispatchQueue()
+    }
   }
 
   private getStreamAppendQueue(streamId: string): {

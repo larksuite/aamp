@@ -17,6 +17,7 @@ const client = AampClient.fromMailboxIdentity({
   email: 'agent@example.com',
   smtpPassword: '<smtp-password>',
   baseUrl: 'https://meshmail.ai', // optional if it matches the email domain
+  taskDispatchConcurrency: 10,    // optional, defaults to 10
   rejectUnauthorized: false,
 })
 
@@ -54,6 +55,8 @@ client.on('task.cancel', (task) => {
 
 await client.connect()
 ```
+
+`task.dispatch` handlers are concurrency-limited inside the SDK. If a mailbox suddenly receives a burst of mail, the SDK will process at most `10` task handlers at once by default and queue the rest in memory until a slot is free.
 
 ## Realtime streaming
 
@@ -99,36 +102,6 @@ await client.sendCancel({
   bodyText: 'The upstream request was cancelled.',
 })
 ```
-
-## Registered command dispatch
-
-The SDK can also call an `aamp-cli node serve` node that exposes a registered
-command surface instead of a free-form natural-language worker.
-
-```ts
-await client.sendRegisteredCommand({
-  to: 'worker@meshmail.ai',
-  command: 'git.apply',
-  streamMode: 'full',
-  inputs: [
-    {
-      slot: 'patch_file',
-      attachmentName: 'fix.diff',
-    },
-  ],
-  attachments: [
-    {
-      filename: 'fix.diff',
-      contentType: 'text/x-diff',
-      content: Buffer.from(diffText, 'utf8'),
-    },
-  ],
-})
-```
-
-This sends a `task.dispatch` whose body is JSON in the
-`registered-command/v1` shape. Use it only when the target node's capability
-card explicitly advertises registered commands.
 
 ## Exports
 

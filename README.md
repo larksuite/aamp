@@ -177,7 +177,7 @@ npx aamp-feishu-bridge run
 
 This bridge keeps the Feishu app credentials on the user's own machine, provisions a mailbox identity for the bridge itself, and forwards Feishu direct messages or `@Bot` group messages to a target AAMP agent.
 
-Each message turn is sent as a fresh `task.dispatch`, while sticky chat continuity is carried through `X-AAMP-Dispatch-Context.session_key`. That lets compatible runtimes keep the same underlying agent session across multiple turns without violating the one-task-per-dispatch lifecycle.
+Each message turn is sent as a fresh `task.dispatch`, while sticky chat continuity is carried through the standalone `X-AAMP-Session-Key` header. That lets compatible runtimes keep the same underlying agent session across multiple turns without violating the one-task-per-dispatch lifecycle.
 
 ### Option 4: Build a minimal worker with the SDK
 
@@ -451,6 +451,7 @@ Common headers:
 
 - `X-AAMP-Intent`
 - `X-AAMP-TaskId`
+- `X-AAMP-Session-Key`
 - `X-AAMP-Priority`
 - `X-AAMP-Expires-At`
 - `X-AAMP-Dispatch-Context`

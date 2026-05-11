@@ -33,6 +33,7 @@ export const AAMP_HEADER = {
   VERSION: 'X-AAMP-Version',
   INTENT: 'X-AAMP-Intent',
   TASK_ID: 'X-AAMP-TaskId',
+  SESSION_KEY: 'X-AAMP-Session-Key',
   CONTEXT_LINKS: 'X-AAMP-ContextLinks',
   DISPATCH_CONTEXT: 'X-AAMP-Dispatch-Context',
   PRIORITY: 'X-AAMP-Priority',
@@ -65,6 +66,7 @@ export interface TaskDispatch {
   protocolVersion: string
   intent: 'task.dispatch'
   taskId: string
+  sessionKey?: string
   title: string
   priority: TaskPriority
   expiresAt?: string
@@ -251,6 +253,9 @@ export interface AampClientConfig {
   /** How often to retry failed JMAP connection (ms, default: 5000) */
   reconnectInterval?: number
 
+  /** Maximum number of task.dispatch handlers running concurrently (default: 10). */
+  taskDispatchConcurrency?: number
+
   /** Whether to reject unauthorized TLS certificates (default: true).
    *  Set to false only for development with self-signed certificates. */
   rejectUnauthorized?: boolean
@@ -272,6 +277,9 @@ export interface AampMailboxIdentityConfig {
 
   /** How often to retry failed JMAP connection (ms, default: 5000) */
   reconnectInterval?: number
+
+  /** Maximum number of task.dispatch handlers running concurrently (default: 10). */
+  taskDispatchConcurrency?: number
 
   /** Whether to reject unauthorized TLS certificates (default: true). */
   rejectUnauthorized?: boolean
@@ -366,6 +374,7 @@ export interface SendTaskOptions {
   priority?: TaskPriority
   /** Absolute expiry timestamp. */
   expiresAt?: string
+  sessionKey?: string
   contextLinks?: string[]
   dispatchContext?: Record<string, string>
   parentTaskId?: string
@@ -400,6 +409,7 @@ export interface SendRegisteredCommandOptions {
   streamMode?: RegisteredCommandStreamMode
   priority?: TaskPriority
   expiresAt?: string
+  sessionKey?: string
   contextLinks?: string[]
   dispatchContext?: Record<string, string>
   parentTaskId?: string
@@ -536,7 +546,7 @@ export interface UpdateDirectoryProfileOptions {
 // Event emitter types
 // =====================================================
 export interface AampClientEvents {
-  'task.dispatch': (task: TaskDispatch) => void
+  'task.dispatch': (task: TaskDispatch) => void | Promise<void>
   'task.cancel': (task: TaskCancel) => void
   'task.result': (result: TaskResult) => void
   'task.help_needed': (help: TaskHelp) => void

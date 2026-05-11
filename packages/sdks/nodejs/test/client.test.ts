@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { setImmediate as waitForNextTick } from 'node:timers/promises'
 
 class FakeEmitter {
   private handlers = new Map<string, Array<(...args: any[]) => void>>()
@@ -106,6 +107,7 @@ describe('AampClient', () => {
     await client.connect()
     lastJmapClient!.emit('task.dispatch', { taskId: 'task-7', from: 'sender@meshmail.ai', title: 'Review' })
     lastJmapClient!.emit('_autoAck', { to: 'sender@meshmail.ai', taskId: 'task-7', messageId: '<mid-7>' })
+    await waitForNextTick()
 
     expect(seen).toHaveLength(1)
     expect(seen[0].payload).toMatchObject({ taskId: 'task-7', title: 'Review' })
@@ -115,6 +117,53 @@ describe('AampClient', () => {
       inReplyTo: '<mid-7>',
     })
     expect(client.isConnected()).toBe(true)
+  })
+
+  it('limits concurrent task.dispatch handlers and queues overflow work', async () => {
+    const { AampClient } = await import('../src/client.js')
+    const client = new AampClient({
+      email: 'agent@meshmail.ai',
+      mailboxToken: Buffer.from('agent@meshmail.ai:password-1').toString('base64'),
+      baseUrl: 'https://meshmail.ai',
+      taskDispatchConcurrency: 2,
+    })
+
+    let active = 0
+    let maxActive = 0
+    const started: string[] = []
+    const releases = new Map<string, () => void>()
+
+    client.on('task.dispatch', async (task) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      started.push(task.taskId)
+      await new Promise<void>((resolve) => {
+        releases.set(task.taskId, () => {
+          active -= 1
+          resolve()
+        })
+      })
+    })
+
+    await client.connect()
+
+    lastJmapClient!.emit('task.dispatch', { taskId: 'task-1', from: 'sender@meshmail.ai', title: 'One' })
+    lastJmapClient!.emit('task.dispatch', { taskId: 'task-2', from: 'sender@meshmail.ai', title: 'Two' })
+    lastJmapClient!.emit('task.dispatch', { taskId: 'task-3', from: 'sender@meshmail.ai', title: 'Three' })
+    await waitForNextTick()
+
+    expect(started).toEqual(['task-1', 'task-2'])
+    expect(maxActive).toBe(2)
+
+    releases.get('task-1')?.()
+    await waitForNextTick()
+
+    expect(started).toEqual(['task-1', 'task-2', 'task-3'])
+    expect(maxActive).toBe(2)
+
+    releases.get('task-2')?.()
+    releases.get('task-3')?.()
+    await waitForNextTick()
   })
 
   it('forwards card intents from JMAP and sends card messages through SMTP sender', async () => {
