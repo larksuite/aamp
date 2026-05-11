@@ -33,6 +33,7 @@ import {
   createNodeConfigSummary,
   runNodeServe,
 } from './node-runtime.js'
+import { getProfilesDir } from './storage.js'
 
 type CommandName =
   | 'init'
@@ -130,7 +131,7 @@ Usage:
   aamp-cli node sync-card [--node NAME]
   aamp-cli node call [--node NAME | --profile NAME] --target EMAIL --command NAME [--title TEXT] [--stream none|status-only|full] [--task-id ID] [--priority urgent|high|normal] [--expires-at ISO] [--context-link URL]... [--dispatch-context KEY=VALUE]... [--arg KEY=VALUE]... [--attachment SLOT=PATH]... [--any_other_key VALUE]...
   aamp-cli node command list [--node NAME]
-  aamp-cli node command add [--node NAME] [--spec-file PATH]
+  aamp-cli node command add [--node NAME] [--spec-file PATH] [--env KEY=VALUE]...
   aamp-cli node command remove [--node NAME] --command NAME
   aamp-cli node policy show [--node NAME]
   aamp-cli node policy set [--node NAME] [--default-action allow|deny] [--allow-from EMAIL_OR_PATTERN]... [--allow-command NAME]... [--require-context KEY=VALUE]... [--clear-allow-from] [--clear-allow-command] [--clear-require-context]
@@ -188,10 +189,6 @@ function requireArg(args: ParsedArgs, key: string): string {
   return value
 }
 
-function getProfilesDir(): string {
-  return path.join(os.homedir(), '.aamp-cli', 'profiles')
-}
-
 function getProfilePath(profile = DEFAULT_PROFILE): string {
   return path.join(getProfilesDir(), `${profile}.json`)
 }
@@ -219,6 +216,20 @@ function resolveBaseUrl(profile: CliProfile): string {
 
 function resolveSmtpHost(baseUrl: string, explicit?: string): string {
   return explicit || new URL(baseUrl).hostname
+}
+
+async function fetchAampDiscovery(baseUrl: string): Promise<Record<string, any>> {
+  const discoveryUrl = `${baseUrl.replace(/\/$/, '')}/.well-known/aamp`
+  const res = await fetch(discoveryUrl)
+  if (!res.ok) {
+    throw new Error(`AAMP discovery failed: ${res.status} ${res.statusText}`)
+  }
+
+  const discovery = await res.json() as Record<string, any>
+  if (!discovery.api?.url) {
+    throw new Error('AAMP discovery did not return api.url')
+  }
+  return discovery
 }
 
 function createClient(profile: CliProfile): AampClient {
@@ -688,19 +699,18 @@ export async function runListen(args: ParsedArgs): Promise<void> {
 export async function runStatus(args: ParsedArgs): Promise<void> {
   const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
   const cfg = await loadProfile(profile)
-  const client = createClient(cfg)
-  const smtpOk = await client.verifySmtp().catch(() => false)
-  await client.connect()
+  const baseUrl = resolveBaseUrl(cfg)
+  const discovery = await fetchAampDiscovery(baseUrl)
+
   console.log(JSON.stringify({
     profile,
     email: cfg.email,
-    baseUrl: resolveBaseUrl(cfg),
-    smtpHost: resolveSmtpHost(resolveBaseUrl(cfg), cfg.smtpHost),
-    smtpPort: cfg.smtpPort ?? 587,
-    transport: formatTransport(client),
-    smtpVerified: smtpOk,
+    baseUrl,
+    discoveryUrl: `${baseUrl.replace(/\/$/, '')}/.well-known/aamp`,
+    supported: true,
+    apiUrl: new URL(discovery.api.url, `${baseUrl}/`).toString(),
+    capabilities: discovery.capabilities ?? null,
   }, null, 2))
-  client.disconnect()
 }
 
 export async function runInbox(args: ParsedArgs): Promise<void> {
@@ -940,6 +950,15 @@ async function persistRegisteredCommand(nodeName: string, config: NodeConfig, co
   return { specPath }
 }
 
+function parseEnvironmentEntries(values: string[]): Record<string, string> {
+  const environment: Record<string, string> = {}
+  for (const value of values) {
+    const entry = parseKeyValueEntry(value, 'env')
+    environment[entry.key] = entry.value
+  }
+  return environment
+}
+
 async function createClientForNodeCall(args: ParsedArgs): Promise<RegisteredCommandSender> {
   const profileName = firstArg(args, 'profile')
   if (profileName) {
@@ -1055,6 +1074,7 @@ async function buildInteractiveCommandSpec(nodeName: string): Promise<Registered
   const timeoutMs = Number(await prompt('Timeout (ms)', '30000'))
   const maxStdoutBytes = Number(await prompt('Max stdout bytes', '65536'))
   const maxStderrBytes = Number(await prompt('Max stderr bytes', '65536'))
+  const environment: Record<string, string> = {}
 
   const argsTemplate: string[] = []
   const properties: NonNullable<NonNullable<RegisteredCommand['argSchema']>['properties']> = {}
@@ -1091,12 +1111,20 @@ async function buildInteractiveCommandSpec(nodeName: string): Promise<Registered
     argsTemplate.push(`{{args.${token.value}}}`)
   }
 
+  while (true) {
+    const envEntry = await prompt('Environment variable (KEY=VALUE, leave blank to finish)', '')
+    if (!envEntry.trim()) break
+    const { key, value } = parseKeyValueEntry(envEntry, 'env')
+    environment[key] = value
+  }
+
   const command: RegisteredCommand = {
     name,
     ...(description ? { description } : {}),
     exec,
     argsTemplate,
     workingDirectory,
+    ...(Object.keys(environment).length ? { environment } : {}),
     ...(pathArgs.length ? { pathArgs } : {}),
     ...(required.length ? {
       argSchema: {
@@ -1170,6 +1198,7 @@ export async function runNodeCommandAdd(args: ParsedArgs): Promise<void> {
   const nodeName = getNodeName(args)
   const config = await loadNodeConfig(nodeName)
   const specFile = firstArg(args, 'spec-file')
+  const environmentOverrides = parseEnvironmentEntries(allArgs(args, 'env'))
   let command: RegisteredCommand
   if (specFile) {
     command = JSON.parse(await readFile(specFile, 'utf8')) as RegisteredCommand
@@ -1178,6 +1207,15 @@ export async function runNodeCommandAdd(args: ParsedArgs): Promise<void> {
     }
   } else {
     command = await buildInteractiveCommandSpec(nodeName)
+  }
+  if (Object.keys(environmentOverrides).length > 0) {
+    command = {
+      ...command,
+      environment: {
+        ...(command.environment ?? {}),
+        ...environmentOverrides,
+      },
+    }
   }
   const { specPath } = await persistRegisteredCommand(nodeName, config, command)
   console.log(`Registered command "${command.name}" on node "${nodeName}"`)

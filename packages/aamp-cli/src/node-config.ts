@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
+import { getNodeRootDir, getNodeStateRootDir } from './storage.js'
 
 export interface NodeMailboxConfig {
   email: string
@@ -36,6 +36,7 @@ export interface RegisteredCommand {
   exec: string
   argsTemplate: string[]
   workingDirectory: string
+  environment?: Record<string, string>
   pathArgs?: string[]
   argSchema?: SimpleJsonSchema
   attachments?: Record<string, RegisteredAttachmentSlot>
@@ -72,10 +73,6 @@ const DEFAULT_CONFIG: Omit<NodeConfig, 'mailbox'> = {
   },
 }
 
-function getNodeRootDir(): string {
-  return path.join(os.homedir(), '.aamp-cli', 'nodes')
-}
-
 export function getNodeConfigPath(nodeName = DEFAULT_NODE_NAME): string {
   return path.join(getNodeRootDir(), `${nodeName}.json`)
 }
@@ -85,14 +82,24 @@ export function getNodeCommandSpecsDir(nodeName = DEFAULT_NODE_NAME): string {
 }
 
 export function getNodeStateDir(nodeName = DEFAULT_NODE_NAME): string {
-  return path.join(os.homedir(), '.aamp-cli', 'node-state', nodeName)
+  return path.join(getNodeStateRootDir(), nodeName)
 }
 
 function normalizeNodeConfig(raw: NodeConfig): NodeConfig {
   return {
     version: 1,
     mailbox: raw.mailbox,
-    commands: Array.isArray(raw.commands) ? raw.commands : [],
+    commands: Array.isArray(raw.commands)
+      ? raw.commands.map((command) => ({
+          ...command,
+          environment: command.environment && typeof command.environment === 'object'
+            ? Object.fromEntries(
+                Object.entries(command.environment)
+                  .filter(([key, value]) => key && typeof value === 'string'),
+              )
+            : undefined,
+        }))
+      : [],
     senderPolicy: {
       defaultAction: raw.senderPolicy?.defaultAction === 'allow' ? 'allow' : 'deny',
       allowFrom: Array.isArray(raw.senderPolicy?.allowFrom) ? raw.senderPolicy.allowFrom : [],

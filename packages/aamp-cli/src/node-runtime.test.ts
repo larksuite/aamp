@@ -64,6 +64,9 @@ function createNodeConfig(workdir: string): NodeConfig {
         timeoutMs: 10_000,
         maxStdoutBytes: 5,
         maxStderrBytes: 1024,
+        environment: {
+          DEMO_TOKEN: 'secret-value',
+        },
       },
     ],
     senderPolicy: {
@@ -79,9 +82,9 @@ function createFakeSpawn(
   stdoutText: string,
   stderrText = '',
 ) {
-  const calls: Array<{ cmd: string; argv: string[]; cwd?: string }> = []
-  const fakeSpawn = vi.fn((cmd: string, argv: string[], opts: { cwd?: string }) => {
-    calls.push({ cmd, argv, cwd: opts.cwd })
+  const calls: Array<{ cmd: string; argv: string[]; cwd?: string; env?: NodeJS.ProcessEnv }> = []
+  const fakeSpawn = vi.fn((cmd: string, argv: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+    calls.push({ cmd, argv, cwd: opts.cwd, env: opts.env })
     const child = new EventEmitter() as any
     child.stdout = new PassThrough()
     child.stderr = new PassThrough()
@@ -164,6 +167,9 @@ Dispatch metadata
         cmd: '/usr/bin/demo',
         argv: ['run', 'hello'],
         cwd: workdir,
+        env: expect.objectContaining({
+          DEMO_TOKEN: 'secret-value',
+        }),
       },
     ])
 
@@ -194,9 +200,18 @@ Dispatch metadata
     expect(client.sendStreamOpened).toHaveBeenCalled()
     expect(client.appendStreamEvent).toHaveBeenCalled()
 
-    const ledgerFile = path.join(tempHome, '.aamp-cli', 'node-state', 'default', 'ledger.json')
+    const ledgerFile = path.join(tempHome, '.aamp', 'cli', 'node-state', 'default', 'ledger.json')
     const ledger = JSON.parse(readFileSync(ledgerFile, 'utf8'))
     expect(ledger.tasks['task-1'].status).toBe('completed')
+  })
+
+  it('lists environment variable names but not values in capability cards', async () => {
+    const { buildNodeCapabilityCard } = await import('./node-runtime.js')
+    const workdir = mkdtempSync(path.join(os.tmpdir(), 'aamp-node-workdir-'))
+    const card = buildNodeCapabilityCard(createNodeConfig(workdir))
+
+    expect(card).toContain('Environment variables: DEMO_TOKEN')
+    expect(card).not.toContain('secret-value')
   })
 
   it('rejects dispatches before execution when sender policy blocks them', async () => {
@@ -274,7 +289,7 @@ Dispatch metadata
       messageId: 'msg-zip',
       subject: '[AAMP Task] Run zip demo',
       attachments: [{
-        filename: 'bundle-errorcode.zip',
+        filename: 'linco-errorcode.zip',
         contentType: 'application/x-zip-compressed',
         size: 128,
         blobId: 'blob-zip',
@@ -282,7 +297,7 @@ Dispatch metadata
       bodyText: JSON.stringify({
         kind: 'registered-command/v1',
         command: 'demo.zip',
-        inputs: [{ slot: 'archive', attachmentName: 'bundle-errorcode.zip' }],
+        inputs: [{ slot: 'archive', attachmentName: 'linco-errorcode.zip' }],
       }),
     })
 
@@ -329,7 +344,7 @@ Dispatch metadata
       messageId: 'msg-tgz',
       subject: '[AAMP Task] Run tgz demo',
       attachments: [{
-        filename: 'artifact-bundle.tar.gz',
+        filename: 'linco-bundle.tar.gz',
         contentType: 'application/x-compressed-tar',
         size: 128,
         blobId: 'blob-tgz',
@@ -337,7 +352,7 @@ Dispatch metadata
       bodyText: JSON.stringify({
         kind: 'registered-command/v1',
         command: 'demo.tgz',
-        inputs: [{ slot: 'archive', attachmentName: 'artifact-bundle.tar.gz' }],
+        inputs: [{ slot: 'archive', attachmentName: 'linco-bundle.tar.gz' }],
       }),
     })
 
@@ -412,7 +427,7 @@ Dispatch metadata
     expect(fakeSpawn).not.toHaveBeenCalled()
     expect(client.sendResult).not.toHaveBeenCalled()
 
-    const ledgerFile = path.join(tempHome, '.aamp-cli', 'node-state', 'default', 'ledger.json')
+    const ledgerFile = path.join(tempHome, '.aamp', 'cli', 'node-state', 'default', 'ledger.json')
     await vi.waitFor(() => {
       const ledger = JSON.parse(readFileSync(ledgerFile, 'utf8'))
       expect(ledger.tasks['task-expired'].status).toBe('expired')

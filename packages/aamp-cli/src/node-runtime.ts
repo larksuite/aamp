@@ -351,6 +351,13 @@ function renderArgsTemplate(
   return argv
 }
 
+function buildCommandEnvironment(command: RegisteredCommand): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...(command.environment ?? {}),
+  }
+}
+
 async function readJsonFile<T>(file: string, fallback: T): Promise<T> {
   if (!existsSync(file)) return fallback
   const raw = await readFile(file, 'utf8')
@@ -975,6 +982,7 @@ export class AampLocalNodeService {
 
     const child = this.spawnProcess(params.command.exec, params.argv, {
       cwd: params.command.workingDirectory,
+      env: buildCommandEnvironment(params.command),
       shell: false,
       stdio: 'pipe',
     })
@@ -1138,6 +1146,9 @@ export function buildNodeCapabilityCard(config: NodeConfig): string {
       lines.push('```json')
       lines.push(JSON.stringify(command.argSchema, null, 2))
       lines.push('```')
+    }
+    if (command.environment && Object.keys(command.environment).length > 0) {
+      lines.push(`- Environment variables: ${Object.keys(command.environment).join(', ')}`)
     }
     if (command.attachments && Object.keys(command.attachments).length > 0) {
       lines.push('- Attachment slots:')

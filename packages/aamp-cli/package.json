@@ -4,7 +4,7 @@
     "dist"
   ],
   "license": "MIT",
-  "version": "0.1.3",
+  "version": "0.1.8",
   "description": "CLI for connecting any agent mailbox to the AAMP network via aamp-sdk",
   "type": "module",
   "main": "dist/index.js",
