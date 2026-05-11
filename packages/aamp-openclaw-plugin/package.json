@@ -7,7 +7,7 @@
     "skills"
   ],
   "license": "MIT",
-  "version": "0.1.32",
+  "version": "0.1.36",
   "description": "AAMP Agent Mail Protocol — OpenClaw plugin. Gives OpenClaw an AAMP mailbox identity and lets it receive, process and reply to AAMP tasks.",
   "type": "module",
   "main": "dist/index.js",
@@ -29,6 +29,12 @@
             "aampHost": {
               "type": "string",
               "description": "AAMP service host, e.g. https://meshmail.ai"
+            },
+            "taskDispatchConcurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 10,
+              "description": "Maximum number of inbound task.dispatch handlers running concurrently before OpenClaw enqueues them locally."
             },
             "slug": {
               "type": "string",
@@ -84,6 +90,11 @@
             "placeholder": "https://meshmail.ai",
             "promptOnInstall": true
           },
+          "taskDispatchConcurrency": {
+            "label": "Task Concurrency",
+            "placeholder": "10",
+            "promptOnInstall": false
+          },
           "slug": {
             "label": "Agent Slug",
             "placeholder": "openclaw-agent",
@@ -123,6 +134,12 @@
         "aampHost": {
           "type": "string",
           "description": "AAMP service host, e.g. https://meshmail.ai"
+        },
+        "taskDispatchConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "Maximum number of inbound task.dispatch handlers running concurrently before OpenClaw enqueues them locally."
         },
         "slug": {
           "type": "string",
@@ -178,6 +195,11 @@
         "placeholder": "https://meshmail.ai",
         "promptOnInstall": true
       },
+      "taskDispatchConcurrency": {
+        "label": "Task Concurrency",
+        "placeholder": "10",
+        "promptOnInstall": false
+      },
       "slug": {
         "label": "Agent Slug",
         "placeholder": "openclaw-agent",
@@ -218,9 +240,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "aamp-sdk": "file:../sdks/nodejs",
     "nodemailer": "^6.9.10",
-    "ws": "^8.16.0"
+    "ws": "^8.16.0",
+    "aamp-sdk": "file:../sdks/nodejs"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",

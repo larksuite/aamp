@@ -38,6 +38,7 @@ npm run build
         "enabled": true,
         "config": {
           "aampHost": "https://meshmail.ai",
+          "taskDispatchConcurrency": 10,
           "slug": "openclaw-agent",
           "credentialsFile": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
           "senderPolicies": [
@@ -57,6 +58,7 @@ npm run build
 ```
 
 If `senderPolicies` is omitted, all senders are accepted. If set, the dispatch sender must match one policy and all configured dispatch-context rules for that sender must pass.
+`taskDispatchConcurrency` is optional and defaults to `10`.
 
 The plugin also understands:
 

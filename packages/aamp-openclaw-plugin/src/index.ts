@@ -65,6 +65,7 @@ interface PendingTask {
   from: string
   title: string
   bodyText: string
+  dispatchContext?: Record<string, string>
   threadHistory: AampThreadEvent[]
   threadContextText: string
   priority: TaskPriority
@@ -72,11 +73,13 @@ interface PendingTask {
   contextLinks: string[]
   messageId: string
   receivedAt: string  // ISO-8601
+  awaitingHelpReply?: boolean
 }
 
 interface PluginConfig {
   /** e.g. "meshmail.ai" — all URLs are derived from this */
   aampHost: string
+  taskDispatchConcurrency?: number
   slug?: string
   summary?: string
   cardText?: string
@@ -255,6 +258,37 @@ function isSyntheticPendingKey(taskKey: string): boolean {
   return taskKey.startsWith('result:') || taskKey.startsWith('help:')
 }
 
+function isTaskAwaitingHelpReply(task: PendingTask): boolean {
+  return task.awaitingHelpReply === true
+}
+
+function isConversationalTask(task: PendingTask): boolean {
+  const source = task.dispatchContext?.source?.trim().toLowerCase()
+  return source === 'feishu' || source === 'wechat'
+}
+
+function firstDispatchContextValue(
+  context: Record<string, string> | undefined,
+  keys: string[],
+): string | undefined {
+  if (!context) return undefined
+  for (const key of keys) {
+    const value = context[key]?.trim()
+    if (value) return value
+  }
+  return undefined
+}
+
+function threadAlreadyTerminal(events: AampThreadEvent[] | undefined): boolean {
+  return (events ?? []).some((event) =>
+    event.intent === 'task.result' || event.intent === 'task.cancel',
+  )
+}
+
+function isActionablePendingTask(taskKey: string, task: PendingTask): boolean {
+  return !isSyntheticPendingKey(taskKey) && !isTaskAwaitingHelpReply(task)
+}
+
 function normalizeOpenClawAgentId(value: unknown): string {
   const trimmed = typeof value === 'string' ? value.trim() : ''
   if (!trimmed) return DEFAULT_OPENCLAW_AGENT_ID
@@ -300,12 +334,79 @@ function buildAampConversationSessionKey(value: string, config: unknown): string
   return buildOpenClawMainSessionKey(`${AAMP_SESSION_PREFIX}default:${value}`, config)
 }
 
+function buildAampStickySessionKey(
+  sessionKey: string | undefined,
+  config: unknown,
+): string | undefined {
+  const stickyValue = sessionKey?.trim()
+  if (!stickyValue) return undefined
+  return buildAampConversationSessionKey(`session:${stickyValue}`, config)
+}
+
 function buildAampTaskSessionKey(taskId: string, config: unknown): string {
   return buildAampConversationSessionKey(`task:${taskId}`, config)
 }
 
 function buildAampWakeSessionKey(kind: string, id: string): string {
   return `${AAMP_SESSION_PREFIX}wake:${kind}:${id}`
+}
+
+function buildSessionKeyForPendingTask(task: PendingTask, config: unknown): string {
+  return buildAampStickySessionKey(task.sessionKey, config)
+    ?? buildAampTaskSessionKey(task.taskId, config)
+}
+
+function buildWakeSessionKeyForPendingTask(task: PendingTask, config: unknown): string {
+  return buildAampStickySessionKey(task.sessionKey, config)
+    ?? buildAampWakeSessionKey('task', task.taskId)
+}
+
+function findPendingEntryForSession(
+  sessionKey: unknown,
+  config: unknown,
+): [string, PendingTask] | undefined {
+  if (typeof sessionKey !== 'string' || !isAampSessionKey(sessionKey)) return undefined
+
+  const requested = buildOpenClawMainSessionKey(stripOpenClawAgentScope(sessionKey), config)
+  const entries = [...pendingTasks.entries()]
+    .filter(([key, task]) => isActionablePendingTask(key, task))
+    .filter(([, task]) => buildSessionKeyForPendingTask(task, config) === requested)
+    .sort((a, b) => {
+      const rankDiff = priorityRank(a[1].priority) - priorityRank(b[1].priority)
+      if (rankDiff !== 0) return rankDiff
+      return new Date(a[1].receivedAt).getTime() - new Date(b[1].receivedAt).getTime()
+    })
+
+  return entries[0]
+}
+
+function resolvePendingKeyFromSessionKey(sessionKey: unknown): string | undefined {
+  if (typeof sessionKey !== 'string') return undefined
+
+  const normalized = stripOpenClawAgentScope(sessionKey).trim()
+  if (!normalized) return undefined
+
+  const parts = normalized.split(':')
+  if (parts[0]?.toLowerCase() !== 'aamp') return undefined
+
+  if (parts[1]?.toLowerCase() === 'wake') {
+    const kind = parts[2]?.toLowerCase()
+    const id = parts.slice(3).join(':').trim()
+    if (!id) return undefined
+    if (kind === 'task') return id
+    if (kind === 'result' || kind === 'help') return `${kind}:${id}`
+    return undefined
+  }
+
+  if (parts[1]?.toLowerCase() === 'default') {
+    const kind = parts[2]?.toLowerCase()
+    const id = parts.slice(3).join(':').trim()
+    if (!id) return undefined
+    if (kind === 'task') return id
+    if (kind === 'result' || kind === 'help') return `${kind}:${id}`
+  }
+
+  return undefined
 }
 
 function saveTerminalTaskIds(): void {
@@ -356,7 +457,7 @@ function nextPendingEntry(): [string, PendingTask] | undefined {
   }
 
   return entries
-    .filter(([key]) => !key.startsWith('result:') && !key.startsWith('help:'))
+    .filter(([key, task]) => isActionablePendingTask(key, task))
     .sort((a, b) => {
       const rankDiff = priorityRank(a[1].priority) - priorityRank(b[1].priority)
       if (rankDiff !== 0) return rankDiff
@@ -376,6 +477,7 @@ export function queuePendingTask(
     from: task.from,
     title: task.title,
     bodyText: task.bodyText ?? '',
+    dispatchContext: task.dispatchContext,
     threadHistory: task.threadHistory ?? [],
     threadContextText: task.threadContextText ?? '',
     priority: task.priority ?? 'normal',
@@ -631,8 +733,8 @@ export default {
     }
 
     function wakeAgentForPendingTask(task: PendingTask): void {
-      const fallbackSessionKey = buildAampWakeSessionKey('task', task.taskId)
-      const openClawSessionKey = buildAampTaskSessionKey(task.taskId, api.config)
+      const fallbackSessionKey = buildWakeSessionKeyForPendingTask(task, api.config)
+      const openClawSessionKey = buildSessionKeyForPendingTask(task, api.config)
       const fallback = () => triggerHeartbeatWake(fallbackSessionKey, `task ${task.taskId}`)
       const dispatcher = channelRuntime?.reply?.dispatchReplyWithBufferedBlockDispatcher
 
@@ -730,6 +832,7 @@ export default {
         email: identity.email,
         smtpPassword: identity.smtpPassword,
         baseUrl: base,
+        taskDispatchConcurrency: cfg.taskDispatchConcurrency,
         // Local/dev: management-service proxy uses plain HTTP, no TLS cert to verify.
         // Production: set to true when using wss:// with valid certs.
         rejectUnauthorized: false,
@@ -738,57 +841,63 @@ export default {
       aampClient.on('task.dispatch', (task: TaskDispatch) => {
         api.logger.info(`[AAMP] ← task.dispatch  ${task.taskId}  "${task.title}"  from=${task.from}`)
 
-        void (async () => {
+        return (async () => {
           try {
-          if (terminalTaskIds.has(task.taskId)) {
-            api.logger.info(`[AAMP] Skipping already-terminal task ${task.taskId}`)
-            return
-          }
-
-          // ── Sender policy / dispatch-context authorization ────────────────────
-          const decision = matchSenderPolicy(task, cfg.senderPolicies)
-          if (!decision.allowed) {
-            api.logger.warn(`[AAMP] ✗ rejected by senderPolicies: ${task.from}  task=${task.taskId}  reason=${decision.reason}`)
-            void aampClient!.sendResult({
-              to: task.from,
-              taskId: task.taskId,
-              status: 'rejected',
-              output: '',
-              errorMsg: decision.reason ?? `Sender ${task.from} is not allowed.`,
-            }).catch((err: Error) => {
-              api.logger.error(`[AAMP] Failed to send rejection for task ${task.taskId}: ${err.message}`)
-            })
-            return
-          }
-
-          const hydratedTask = await aampClient!.hydrateTaskDispatch(task).catch((err: Error) => {
-            api.logger.warn(`[AAMP] Failed to load thread history for ${task.taskId}: ${err.message}`)
-            return {
-              ...task,
-              threadHistory: [],
-              threadContextText: '',
+            if (terminalTaskIds.has(task.taskId)) {
+              api.logger.info(`[AAMP] Skipping already-terminal task ${task.taskId}`)
+              return
             }
-          })
 
-          if (!queuePendingTask(hydratedTask)) {
-            api.logger.info(`[AAMP] Ignoring already-terminal or expired task ${task.taskId}`)
-            return
+            // ── Sender policy / dispatch-context authorization ────────────────────
+            const decision = matchSenderPolicy(task, cfg.senderPolicies)
+            if (!decision.allowed) {
+              api.logger.warn(`[AAMP] ✗ rejected by senderPolicies: ${task.from}  task=${task.taskId}  reason=${decision.reason}`)
+              void aampClient!.sendResult({
+                to: task.from,
+                taskId: task.taskId,
+                status: 'rejected',
+                output: '',
+                errorMsg: decision.reason ?? `Sender ${task.from} is not allowed.`,
+              }).catch((err: Error) => {
+                api.logger.error(`[AAMP] Failed to send rejection for task ${task.taskId}: ${err.message}`)
+              })
+              return
+            }
+
+            const hydratedTask = await aampClient!.hydrateTaskDispatch(task).catch((err: Error) => {
+              api.logger.warn(`[AAMP] Failed to load thread history for ${task.taskId}: ${err.message}`)
+              return {
+                ...task,
+                threadHistory: [],
+                threadContextText: '',
+              }
+            })
+
+            if (threadAlreadyTerminal(hydratedTask.threadHistory)) {
+              rememberTerminalTask(task.taskId)
+              api.logger.info(`[AAMP] Skipping historical task ${task.taskId} because the thread already reached a terminal state`)
+              return
+            }
+
+            if (!queuePendingTask(hydratedTask)) {
+              api.logger.info(`[AAMP] Ignoring already-terminal or expired task ${task.taskId}`)
+              return
+            }
+
+            void ensureTaskStream(pendingTasks.get(task.taskId)!).catch((err: Error) => {
+              api.logger.warn(`[AAMP] Failed to open stream for task ${task.taskId}: ${err.message}`)
+            })
+
+            // Wake the agent immediately after enqueueing the task.
+            // In polling fallback mode heartbeat wakes can be delayed, so prefer a direct
+            // channel dispatch when channelRuntime is available and only fall back to heartbeat.
+            wakeAgentForPendingTask(pendingTasks.get(task.taskId)!)
+          } catch (err) {
+            api.logger.error(`[AAMP] task.dispatch handler failed for ${task.taskId}: ${(err as Error).message}`)
+            if (pendingTasks.has(task.taskId)) {
+              triggerHeartbeatWake(buildWakeSessionKeyForPendingTask(pendingTasks.get(task.taskId)!, api.config), `task ${task.taskId}`)
+            }
           }
-
-          void ensureTaskStream(pendingTasks.get(task.taskId)!).catch((err: Error) => {
-            api.logger.warn(`[AAMP] Failed to open stream for task ${task.taskId}: ${err.message}`)
-          })
-
-          // Wake the agent immediately after enqueueing the task.
-          // In polling fallback mode heartbeat wakes can be delayed, so prefer a direct
-          // channel dispatch when channelRuntime is available and only fall back to heartbeat.
-          wakeAgentForPendingTask(pendingTasks.get(task.taskId)!)
-        } catch (err) {
-          api.logger.error(`[AAMP] task.dispatch handler failed for ${task.taskId}: ${(err as Error).message}`)
-          if (pendingTasks.has(task.taskId)) {
-            triggerHeartbeatWake(buildAampWakeSessionKey('task', task.taskId), `task ${task.taskId}`)
-          }
-        }
         })()
       })
 
@@ -1202,10 +1311,23 @@ export default {
 
         if (pendingTasks.size === 0) return {}
 
+        const targetedPendingKey = resolvePendingKeyFromSessionKey(ctx?.sessionKey)
+        const targetedEntry = targetedPendingKey
+          ? (() => {
+              const targetedTask = pendingTasks.get(targetedPendingKey)
+              if (!targetedTask) return undefined
+              if (!isSyntheticPendingKey(targetedPendingKey) && isTaskAwaitingHelpReply(targetedTask)) {
+                return undefined
+              }
+              return [targetedPendingKey, targetedTask] as [string, PendingTask]
+            })()
+          : undefined
+
         // Prioritize notifications (sub-task results/help) over actionable tasks.
         // Without this, the oldest actionable task blocks notification delivery,
         // preventing the LLM from seeing sub-task results and completing the parent task.
-        const nextEntry = nextPendingEntry()
+        const sessionScopedEntry = targetedPendingKey ? undefined : findPendingEntryForSession(ctx?.sessionKey, api.config)
+        const nextEntry = targetedPendingKey ? targetedEntry : sessionScopedEntry ?? nextPendingEntry()
         if (!nextEntry) return {}
         const [taskKey, task] = nextEntry
 
@@ -1218,13 +1340,14 @@ export default {
 
         // Find remaining actionable tasks (non-notification) that still need a response
         const actionableTasks = [...pendingTasks.entries()]
-          .filter(([key]) => !key.startsWith('result:') && !key.startsWith('help:'))
+          .filter(([key, pendingTask]) => isActionablePendingTask(key, pendingTask))
           .map(([, t]) => t)
           .sort((a, b) => {
             const rankDiff = priorityRank(a.priority) - priorityRank(b.priority)
             if (rankDiff !== 0) return rankDiff
             return new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime()
           })
+        const otherActionableTasks = actionableTasks.filter((pendingTask) => pendingTask.taskId !== task.taskId)
 
         const hasAttachmentInfo = isNotification && (task.bodyText?.includes('aamp_download_attachment') ?? false)
         const actionRequiredSection = isNotification && actionableTasks.length > 0
@@ -1249,19 +1372,48 @@ export default {
             ].join('\n')
           : ''
 
-        const lines = isNotification ? [
-          `## Sub-task Update`,
+        const dispatchContextLines = task.dispatchContext && Object.keys(task.dispatchContext).length > 0
+          ? `Dispatch Context:\n${Object.entries(task.dispatchContext).map(([key, value]) => `  - ${key}: ${value}`).join('\n')}`
+          : ''
+
+        const taskPromptLines = isConversationalTask(task) ? [
+          `## Pending AAMP Conversation Turn`,
           ``,
-          `A sub-task you dispatched has returned a result. Review the information below.`,
-          `If the sub-task included attachments, use aamp_download_attachment to fetch them.`,
+          `This AAMP task came from a chat surface (${task.dispatchContext?.source ?? 'unknown'}).`,
+          `Treat it as an ongoing conversation turn, not a one-off work order.`,
+          `Your job is to reply naturally to the user's latest message and keep the conversation moving.`,
+          ``,
+          `### Tool selection rules for chat turns:`,
+          ``,
+          `Use aamp_send_result for normal conversation replies, including:`,
+          `  - greetings, acknowledgements, and small talk ("hi", "hello", "thanks", "got it")`,
+          `  - short follow-up questions that help narrow the user's intent`,
+          `  - direct answers, suggestions, or next-step guidance`,
+          ``,
+          `Use aamp_send_help ONLY when you are truly blocked and cannot produce a meaningful`,
+          `reply without waiting for specific missing information from the human.`,
+          `Do NOT use aamp_send_help just because the message is brief or casual.`,
+          ``,
+          `IMPORTANT: For conversational traffic, replying to "hi" with a natural greeting and an`,
+          `offer to help is CORRECT. Do not reject greetings as invalid tasks.`,
+          ``,
+          `### Sub-task dispatch rules:`,
+          `If you delegate work to another agent via aamp_dispatch_task, you MUST pass`,
+          `parentTaskId: "${task.taskId}" to establish the parent-child relationship.`,
+          `If you need to find a suitable agent first, call aamp_directory_search.`,
           ``,
           `Task ID:  ${task.taskId}`,
-          `Priority: ${task.priority}`,
           `From:     ${task.from}`,
           `Title:    ${task.title}`,
-          task.bodyText ? `\n${task.bodyText}` : '',
-          actionRequiredSection,
-          pendingTasks.size > 1 ? `\n(+${pendingTasks.size - 1} more items queued)` : '',
+          dispatchContextLines,
+          task.threadContextText ? `${task.threadContextText}` : '',
+          task.bodyText ? `Latest user message:\n${task.bodyText}` : '',
+          task.contextLinks.length
+            ? `Context Links:\n${task.contextLinks.map((l) => `  - ${l}`).join('\n')}`
+            : '',
+          task.expiresAt ? `Expires: ${task.expiresAt}` : `Expires: none`,
+          `Received: ${task.receivedAt}`,
+          otherActionableTasks.length > 0 ? `\n(+${otherActionableTasks.length} more tasks queued)` : '',
         ] : [
           `## Pending AAMP Task (action required)`,
           ``,
@@ -1294,6 +1446,7 @@ export default {
           `Task ID:  ${task.taskId}`,
           `From:     ${task.from}`,
           `Title:    ${task.title}`,
+          dispatchContextLines,
           task.threadContextText ? `${task.threadContextText}` : '',
           task.bodyText ? `Description:\n${task.bodyText}` : '',
           task.contextLinks.length
@@ -1301,8 +1454,23 @@ export default {
             : '',
           task.expiresAt ? `Expires: ${task.expiresAt}` : `Expires: none`,
           `Received: ${task.receivedAt}`,
-          pendingTasks.size > 1 ? `\n(+${pendingTasks.size - 1} more tasks queued)` : '',
+          otherActionableTasks.length > 0 ? `\n(+${otherActionableTasks.length} more tasks queued)` : '',
         ]
+
+        const lines = isNotification ? [
+          `## Sub-task Update`,
+          ``,
+          `A sub-task you dispatched has returned a result. Review the information below.`,
+          `If the sub-task included attachments, use aamp_download_attachment to fetch them.`,
+          ``,
+          `Task ID:  ${task.taskId}`,
+          `Priority: ${task.priority}`,
+          `From:     ${task.from}`,
+          `Title:    ${task.title}`,
+          task.bodyText ? `\n${task.bodyText}` : '',
+          actionRequiredSection,
+          otherActionableTasks.length > 0 ? `\n(+${otherActionableTasks.length} more tasks queued)` : '',
+        ] : taskPromptLines
           .filter(Boolean)
           .join('\n')
 
@@ -1573,27 +1741,53 @@ export default {
           state: 'help_needed',
           label: p.blockedReason,
         })
+
+        try {
+          await aampClient.sendHelp({
+            to: task.from,
+            taskId: task.taskId,
+            question: p.question,
+            blockedReason: p.blockedReason,
+            suggestedOptions: p.suggestedOptions ?? [],
+            inReplyTo: task.messageId || undefined,
+          })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          await appendTaskStream(task.taskId, 'error', {
+            message: `Failed to send help request: ${message}`,
+          })
+          await appendTaskStream(task.taskId, 'status', {
+            state: 'running',
+            label: 'Help request failed; task still needs a reply',
+          })
+          api.logger.error(`[AAMP] aamp_send_help failed for ${task.taskId}: ${message}`)
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Error: failed to send help request for task ${task.taskId}: ${message}`,
+              },
+            ],
+          }
+        }
+
         await closeTaskStream(task.taskId, {
           reason: 'task.help_needed',
         })
 
-        await aampClient.sendHelp({
-          to: task.from,
-          taskId: task.taskId,
-          question: p.question,
-          blockedReason: p.blockedReason,
-          suggestedOptions: p.suggestedOptions ?? [],
-          inReplyTo: task.messageId || undefined,
+        pendingTasks.set(task.taskId, {
+          ...task,
+          awaitingHelpReply: true,
         })
-
         api.logger.info(`[AAMP] → task.help_needed  ${task.taskId}`)
 
-        // Keep the task in pending — the help reply may arrive later
+        // Keep the task in pending, but suspend it from auto-dispatch until new input arrives.
         return {
           content: [
             {
               type: 'text',
-              text: `Help request sent for task ${task.taskId}. The task remains pending until the dispatcher replies.`,
+              text: `Help request sent for task ${task.taskId}. The task is now suspended until the dispatcher replies.`,
             },
           ],
         }
@@ -1618,7 +1812,7 @@ export default {
           })
           .map(
             (t, i) =>
-              `${i + 1}. [${t.priority}] [${t.taskId}] "${t.title}"${t.bodyText ? `\n   Description: ${t.bodyText}` : ''} — from ${t.from} (received ${t.receivedAt})`,
+              `${i + 1}. [${t.priority}] [${t.taskId}] "${t.title}"${isTaskAwaitingHelpReply(t) ? ' (waiting for dispatcher reply)' : ''}${t.bodyText ? `\n   Description: ${t.bodyText}` : ''} — from ${t.from} (received ${t.receivedAt})`,
           )
 
         return {
