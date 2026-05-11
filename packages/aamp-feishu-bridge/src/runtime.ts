@@ -346,7 +346,7 @@ export class FeishuBridgeRuntime {
     const title = this.buildTaskTitle(message)
     const attachmentBundle = await this.prepareAttachments(message.resources)
     const bodyText = this.buildDispatchBody(message, attachmentBundle.notes)
-    const dispatchContext = this.buildDispatchContext(message, threadKey)
+    const dispatchContext = this.buildDispatchContext(message)
 
     const task = this.createTaskState({
       chatId: message.chatId,
@@ -384,7 +384,7 @@ export class FeishuBridgeRuntime {
     const attachmentBundle = await this.prepareAttachments(message.resources)
     const bodyText = this.buildHelpResponseBody(helpTask, responseText, attachmentBundle.notes)
     const dispatchContext = {
-      ...this.buildDispatchContext(message, threadKey),
+      ...this.buildDispatchContext(message),
       source_kind: 'help_reply',
       reply_to_task_id: helpTask.taskId,
     }
@@ -446,8 +446,6 @@ export class FeishuBridgeRuntime {
         dispatchContext: {
           source: 'feishu',
           source_kind: 'help_reply',
-          session_key: helpTask.threadKey,
-          thread_key: helpTask.threadKey,
           chat_id: helpTask.chatId,
           chat_type: helpTask.chatType,
           sender_open_id: event.operator.openId,
@@ -493,6 +491,7 @@ export class FeishuBridgeRuntime {
     const dispatchResult = await this.aamp.sendTask({
       to: this.config.targetAgentEmail,
       taskId: task.taskId,
+      sessionKey: task.threadKey,
       title: task.title,
       bodyText: options.bodyText,
       dispatchContext: options.dispatchContext,
@@ -561,11 +560,10 @@ export class FeishuBridgeRuntime {
     ].join('\n')
   }
 
-  private buildDispatchContext(message: NormalizedMessage, threadKey?: string): Record<string, string> {
+  private buildDispatchContext(message: NormalizedMessage): Record<string, string> {
     const raw = (message.raw ?? {}) as SenderRawEvent
     return {
       source: 'feishu',
-      ...(threadKey ? { session_key: threadKey, thread_key: threadKey } : {}),
       chat_id: message.chatId,
       chat_type: message.chatType,
       sender_open_id: message.senderId,

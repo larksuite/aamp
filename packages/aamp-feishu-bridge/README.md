@@ -40,7 +40,7 @@ It can:
 - receive group messages where the bot is explicitly mentioned
 - provision or reuse an AAMP mailbox identity for the bridge
 - dispatch each chat turn as a fresh `task.dispatch`
-- preserve sticky conversation state through `X-AAMP-Dispatch-Context.session_key`
+- preserve sticky conversation state through `X-AAMP-Session-Key`
 - stream `task.stream.opened` and `text.delta` back into Feishu through CardKit
 - translate `task.help_needed` into a follow-up card and send the reply back to the same AAMP thread
 
@@ -53,13 +53,14 @@ Each dispatch sent by the bridge includes Feishu-specific routing metadata in `X
 - `sender_name`
 - `chat_id`
 - `chat_type`
-- `session_key`
+
+Each dispatch also carries a separate `X-AAMP-Session-Key` header for sticky conversation routing.
 - `thread_key`
 
 The key design rule is:
 
 - each user message becomes a new `task.dispatch`
-- session continuity is expressed through `session_key`, not by reusing the same `taskId`
+- session continuity is expressed through `X-AAMP-Session-Key`, not by reusing the same `taskId`
 
 Runtimes such as `aamp-openclaw-plugin` and `aamp-acp-bridge` can use that session key to keep multiple turns inside the same underlying agent session.
 
