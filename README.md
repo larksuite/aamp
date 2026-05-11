@@ -349,6 +349,7 @@ Included:
 - [packages/aamp-acp-bridge](./packages/aamp-acp-bridge)
 - [packages/aamp-feishu-bridge](./packages/aamp-feishu-bridge)
 - [packages/aamp-wechat-bridge](./packages/aamp-wechat-bridge)
+- [skills/aamp](./skills/aamp/SKILL.md) for agent runtimes that consume Skill-style operating instructions
 
 ```mermaid
 flowchart TB
