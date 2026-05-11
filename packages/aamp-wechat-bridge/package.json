@@ -1,0 +1,32 @@
+{
+  "name": "aamp-wechat-bridge",
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "version": "0.1.0",
+  "description": "Local WeChat bridge daemon that logs in with QR scan and bridges native WeChat conversations to a target AAMP agent.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "aamp-wechat-bridge": "dist/index.js"
+  },
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "dev": "node esbuild.config.js --watch",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
+    "start": "./dist/index.js run"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.10",
+    "qrcode-terminal": "^0.12.0",
+    "ws": "^8.16.0",
+    "aamp-sdk": "file:../sdks/nodejs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.3"
+  }
+}

@@ -179,7 +179,17 @@ This bridge keeps the Feishu app credentials on the user's own machine, provisio
 
 Each message turn is sent as a fresh `task.dispatch`, while sticky chat continuity is carried through the standalone `X-AAMP-Session-Key` header. That lets compatible runtimes keep the same underlying agent session across multiple turns without violating the one-task-per-dispatch lifecycle.
 
-### Option 4: Build a minimal worker with the SDK
+### Option 4: Connect a local WeChat bot to an existing agent
+
+```bash
+npx aamp-wechat-bridge init
+npx aamp-wechat-bridge login
+npx aamp-wechat-bridge run
+```
+
+This bridge keeps WeChat bot credentials on the user's own machine, authenticates through terminal QR scan, and forwards direct-message chat turns to a target AAMP agent. Like the Feishu bridge, every chat turn is a new `task.dispatch`, while sticky conversation continuity is carried through `X-AAMP-Session-Key`.
+
+### Option 5: Build a minimal worker with the SDK
 
 If you are integrating AAMP into your own runtime instead of bridging an existing agent, start with the SDK:
 
@@ -338,6 +348,7 @@ Included:
 - [packages/aamp-openclaw-plugin](./packages/aamp-openclaw-plugin)
 - [packages/aamp-acp-bridge](./packages/aamp-acp-bridge)
 - [packages/aamp-feishu-bridge](./packages/aamp-feishu-bridge)
+- [packages/aamp-wechat-bridge](./packages/aamp-wechat-bridge)
 
 ```mermaid
 flowchart TB
@@ -348,6 +359,7 @@ flowchart TB
     NODE --> OCP["aamp-openclaw-plugin"]
     NODE --> ACP["aamp-acp-bridge"]
     NODE --> FEI["aamp-feishu-bridge"]
+    NODE --> WX["aamp-wechat-bridge"]
 ```
 
 ## SDKs and Packages
@@ -431,6 +443,14 @@ Feishu bridge:
 
 ```bash
 cd packages/aamp-feishu-bridge
+npm install
+npm run build
+```
+
+WeChat bridge:
+
+```bash
+cd packages/aamp-wechat-bridge
 npm install
 npm run build
 ```
