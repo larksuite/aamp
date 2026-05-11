@@ -6,16 +6,21 @@
       "name": "claude",
       "acpCommand": "claude",
       "slug": "claude-bridge",
-      "credentialsFile": "~/.acp-bridge/.aamp-claude.json",
-      "senderWhitelist": [
-        "system@aamp.local"
+      "credentialsFile": "~/.aamp/acp-bridge/credentials/claude.json",
+      "senderPolicies": [
+        {
+          "sender": "system@aamp.local",
+          "dispatchContextRules": {
+            "project_key": ["proj_123"]
+          }
+        }
       ]
     },
     {
       "name": "openclaw",
       "acpCommand": "openclaw",
       "slug": "openclaw-bridge",
-      "credentialsFile": "~/.acp-bridge/.aamp-openclaw.json",
+      "credentialsFile": "~/.aamp/acp-bridge/credentials/openclaw.json",
       "description": "openclaw via ACP bridge"
     }
   ]

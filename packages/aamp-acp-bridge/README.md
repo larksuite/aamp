@@ -19,10 +19,11 @@ npx aamp-acp-bridge init
 Start the bridge:
 
 ```bash
-npx aamp-acp-bridge start --config bridge.json
+npx aamp-acp-bridge start
 ```
 
-By default, agent credentials are stored under `~/.acp-bridge/`.
+By default, the bridge stores its config under `~/.aamp/acp-bridge/config.json` and agent credentials under `~/.aamp/acp-bridge/credentials/`.
+Legacy `./bridge.json` and `~/.acp-bridge/` data are migrated automatically on first use without deleting the original files.
 
 The bridge understands these task lifecycle intents:
 
@@ -44,7 +45,11 @@ While ACP execution is in progress, the bridge can:
 - create an AAMP task stream for the task
 - send `task.stream.opened`
 - append `status`, `progress`, and `text.delta` events
+- forward ACP `agent_thought_chunk` / `agent_message_chunk` updates into the AAMP stream in realtime
+- expose tool progress as stream progress labels while the agent is working
 - close the stream before the authoritative `task.result` or `task.help_needed`
+
+When `acpx` supports `--format json --json-strict`, the bridge consumes the structured ACP NDJSON stream so reasoning / reply chunks can be forwarded live. Older `acpx` builds automatically fall back to plain-text mode, which preserves compatibility but cannot expose thought chunks incrementally.
 
 ## Config
 
@@ -59,14 +64,22 @@ Minimal example:
       "name": "claude",
       "acpCommand": "claude",
       "slug": "claude-bridge",
-      "credentialsFile": "~/.acp-bridge/.aamp-claude.json",
-      "senderWhitelist": [
-        "system@aamp.local"
+      "taskDispatchConcurrency": 10,
+      "credentialsFile": "~/.aamp/acp-bridge/credentials/claude.json",
+      "senderPolicies": [
+        {
+          "sender": "system@aamp.local",
+          "dispatchContextRules": {
+            "project_key": ["proj_123"]
+          }
+        }
       ]
     }
   ]
 }
 ```
 
-`senderWhitelist` is optional. If configured, the bridge only accepts tasks from those email addresses.
-`credentialsFile` is optional. If omitted, the bridge uses `~/.acp-bridge/.aamp-<agent>.json`.
+`senderPolicies` is optional. If configured, the bridge requires the sender to match one policy and optionally enforces exact-match `X-AAMP-Dispatch-Context` rules.
+Legacy `senderWhitelist` configs still load and are normalized into `senderPolicies`.
+`credentialsFile` is optional. If omitted, the bridge uses `~/.aamp/acp-bridge/credentials/<agent>.json`.
+`taskDispatchConcurrency` is optional and defaults to `10`.

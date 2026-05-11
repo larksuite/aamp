@@ -1,30 +1,17 @@
 #!/usr/bin/env node
 
 import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { AampClient } from 'aamp-sdk'
 import { loadConfig } from './config.js'
 import { AampAcpBridge } from './bridge.js'
 import { runInit } from './cli/init.js'
+import { resolveConfigPath, resolveCredentialsFile } from './storage.js'
 
 const args = process.argv.slice(2)
 const command = args[0] ?? 'start'
-const configPath = args.includes('--config')
-  ? (args[args.indexOf('--config') + 1] ?? 'bridge.json')
-  : 'bridge.json'
-
-function defaultCredentialsFile(name: string): string {
-  return join(homedir(), '.acp-bridge', `.aamp-${name}.json`)
-}
-
-function resolveCredentialsFile(pathValue: string | undefined, name: string): string {
-  const raw = pathValue?.trim()
-  if (!raw) return defaultCredentialsFile(name)
-  if (raw === '~') return homedir()
-  if (raw.startsWith('~/')) return join(homedir(), raw.slice(2))
-  return raw
-}
+const configPath = resolveConfigPath(
+  args.includes('--config') ? (args[args.indexOf('--config') + 1] ?? '') : undefined,
+)
 
 function getOptionValue(flag: string): string | undefined {
   const idx = args.indexOf(flag)
@@ -163,7 +150,7 @@ AAMP ACP Bridge -- Connect ACP agents to the AAMP email network
 
 Usage:
   aamp-acp-bridge init                 Interactive setup wizard
-  aamp-acp-bridge start [--config X]   Start the bridge (default: bridge.json)
+  aamp-acp-bridge start [--config X]   Start the bridge (default: ~/.aamp/acp-bridge/config.json)
   aamp-acp-bridge list  [--config X]   List configured agents
   aamp-acp-bridge status               Show live connection status
   aamp-acp-bridge directory-list --agent NAME [--config X] [--include-self] [--limit N]

@@ -1,10 +1,21 @@
-import { AampClient, type TaskDispatch, type AampAttachment, type TaskCancel } from 'aamp-sdk'
-import { AcpxClient } from './acpx-client.js'
+import {
+  AampClient,
+  type TaskDispatch,
+  type AampAttachment,
+  type TaskCancel,
+  type AampThreadEvent,
+} from 'aamp-sdk'
+import {
+  AcpxClient,
+  type AcpPlanEntry,
+  type AcpTextChunk,
+  type AcpToolUpdate,
+} from './acpx-client.js'
 import { buildPrompt, parseResponse } from './prompt-builder.js'
 import type { AgentConfig } from './config.js'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname } from 'node:path'
+import { resolveCredentialsFile } from './storage.js'
 
 export interface AgentIdentity {
   email: string
@@ -12,16 +23,132 @@ export interface AgentIdentity {
   smtpPassword: string
 }
 
-function defaultCredentialsFile(name: string): string {
-  return join(homedir(), '.acp-bridge', `.aamp-${name}.json`)
+function matchSenderPolicy(
+  task: TaskDispatch,
+  senderPolicies: AgentConfig['senderPolicies'],
+): { allowed: boolean; reason?: string } {
+  if (!senderPolicies?.length) return { allowed: true }
+
+  const sender = task.from.toLowerCase()
+  const policy = senderPolicies.find((item) => item.sender.trim().toLowerCase() === sender)
+  if (!policy) {
+    return { allowed: false, reason: `sender ${task.from} is not allowed by senderPolicies` }
+  }
+
+  const rules = policy.dispatchContextRules
+  if (!rules || Object.keys(rules).length === 0) {
+    return { allowed: true }
+  }
+
+  const context = task.dispatchContext ?? {}
+  const effectiveRules = Object.entries(rules)
+    .map(([key, allowedValues]) => [
+      key,
+      (allowedValues ?? []).map((value) => value.trim()).filter(Boolean),
+    ] as const)
+    .filter(([, allowedValues]) => allowedValues.length > 0)
+
+  if (effectiveRules.length === 0) {
+    return { allowed: true }
+  }
+
+  for (const [key, allowedValues] of effectiveRules) {
+    const contextValue = context[key]
+    if (!contextValue) {
+      return { allowed: false, reason: `dispatchContext missing required key "${key}"` }
+    }
+    if (!allowedValues.includes(contextValue)) {
+      return { allowed: false, reason: `dispatchContext ${key}=${contextValue} is not allowed` }
+    }
+  }
+
+  return { allowed: true }
 }
 
-function resolveCredentialsFile(pathValue: string | undefined, name: string): string {
-  const raw = pathValue?.trim()
-  if (!raw) return defaultCredentialsFile(name)
-  if (raw === '~') return homedir()
-  if (raw.startsWith('~/')) return join(homedir(), raw.slice(2))
-  return raw
+interface StreamTextRenderState {
+  currentChannel?: AcpTextChunk['channel']
+  currentMessageId?: string
+  hasContent: boolean
+}
+
+function buildPhaseStatusLabel(channel: AcpTextChunk['channel']): string {
+  return channel === 'thought'
+    ? 'ACP agent is thinking'
+    : 'ACP agent is composing the reply'
+}
+
+function buildToolProgressLabel(update: AcpToolUpdate): string {
+  const target = update.title?.trim()
+    || update.locations?.[0]?.path
+    || update.kind?.trim()
+    || 'tool'
+
+  switch (update.status) {
+    case 'completed':
+      return `Tool completed: ${target}`
+    case 'failed':
+      return `Tool failed: ${target}`
+    case 'pending':
+      return `Tool pending: ${target}`
+    case 'in_progress':
+    default:
+      return `Tool running: ${target}`
+  }
+}
+
+function formatPlanUpdate(entries: AcpPlanEntry[]): string {
+  const lines = entries.map((entry) => {
+    const prefix = entry.status ? `[${entry.status}] ` : ''
+    return `- ${prefix}${entry.content}`
+  })
+  return `[plan]\n${lines.join('\n')}`
+}
+
+function renderTextChunk(chunk: AcpTextChunk, state: StreamTextRenderState): string {
+  if (!chunk.text) return ''
+
+  const sameMessage = Boolean(
+    state.currentChannel === chunk.channel
+    && (
+      !chunk.messageId
+      || !state.currentMessageId
+      || chunk.messageId === state.currentMessageId
+    ),
+  )
+
+  if (sameMessage) {
+    return chunk.text
+  }
+
+  const prefix = state.hasContent ? '\n\n' : ''
+  state.currentChannel = chunk.channel
+  state.currentMessageId = chunk.messageId
+  state.hasContent = true
+
+  if (chunk.channel === 'thought') {
+    return `${prefix}[thinking] ${chunk.text}`
+  }
+
+  const label = state.hasContent && prefix ? '[assistant] ' : ''
+  return `${prefix}${label}${chunk.text}`
+}
+
+function threadAlreadyTerminal(events: AampThreadEvent[] | undefined): boolean {
+  return (events ?? []).some((event) =>
+    event.intent === 'task.result' || event.intent === 'task.cancel',
+  )
+}
+
+function firstDispatchContextValue(
+  context: Record<string, string> | undefined,
+  keys: string[],
+): string | undefined {
+  if (!context) return undefined
+  for (const key of keys) {
+    const value = context[key]?.trim()
+    if (value) return value
+  }
+  return undefined
 }
 
 /**
@@ -33,7 +160,7 @@ export class AgentBridge {
   private acpx: AcpxClient
   private identity: AgentIdentity | null = null
   private sessionName: string
-  private processing = false
+  private activeTaskCount = 0
   private pollingFallback = false
   private transportMode: 'connecting' | 'websocket' | 'polling' | 'disconnected' = 'connecting'
   private cancelledTaskIds = new Set<string>()
@@ -51,7 +178,24 @@ export class AgentBridge {
   get email(): string { return this.identity?.email ?? '(not registered)' }
   get isConnected(): boolean { return this.client?.isConnected() ?? false }
   get isUsingPollingFallback(): boolean { return this.pollingFallback || (this.client?.isUsingPollingFallback() ?? false) }
-  get isBusy(): boolean { return this.processing }
+  get isBusy(): boolean { return this.activeTaskCount > 0 }
+
+  private sanitizeSessionSuffix(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9:_-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 96)
+  }
+
+  private resolveTaskSessionName(task: TaskDispatch): string {
+    const stickyValue = task.sessionKey?.trim()
+    if (!stickyValue) return this.sessionName
+    const suffix = this.sanitizeSessionSuffix(stickyValue)
+    return suffix ? `${this.sessionName}-${suffix}` : this.sessionName
+  }
 
   private getConfiguredCardText(): string | undefined {
     const inline = this.agentConfig.cardText?.trim()
@@ -101,7 +245,7 @@ export class AgentBridge {
 
     // 3. Wire up task handler
     client.on('task.dispatch', (task: TaskDispatch) => {
-      this.handleTask(task).catch((err) => {
+      return this.handleTask(task).catch((err) => {
         console.error(`[${this.name}] Task ${task.taskId} failed: ${(err as Error).message}`)
       })
     })
@@ -185,17 +329,6 @@ export class AgentBridge {
     this.client = null
   }
 
-  private normalizeEmail(email: string): string {
-    return email.trim().toLowerCase()
-  }
-
-  private isSenderAllowed(sender: string): boolean {
-    const whitelist = this.agentConfig.senderWhitelist
-    if (!whitelist) return true
-    const normalizedSender = this.normalizeEmail(sender)
-    return whitelist.some((allowed) => this.normalizeEmail(allowed) === normalizedSender)
-  }
-
   /**
    * Handle an incoming AAMP task by forwarding to the ACP agent.
    */
@@ -214,23 +347,77 @@ export class AgentBridge {
       return
     }
 
-    if (!this.isSenderAllowed(task.from)) {
+    const senderDecision = matchSenderPolicy(task, this.agentConfig.senderPolicies)
+    if (!senderDecision.allowed) {
       console.warn(
-        `[${this.name}] Rejecting task ${task.taskId} from non-whitelisted sender: ${task.from}`,
+        `[${this.name}] Rejecting task ${task.taskId}: ${senderDecision.reason ?? 'sender policy rejected the task'}`,
       )
       await this.client.sendResult({
         to: task.from,
         taskId: task.taskId,
         status: 'rejected',
         output: '',
-        errorMsg: 'Unauthorized sender: this bridge only accepts tasks from whitelisted email addresses.',
+        errorMsg: `Unauthorized sender policy: ${senderDecision.reason ?? 'task does not match senderPolicies.'}`,
         inReplyTo: task.messageId,
       })
       return
     }
 
-    this.processing = true
+    const hydratedTask = await this.client.hydrateTaskDispatch(task).catch((err) => {
+      console.warn(`[${this.name}] Failed to load thread history for ${task.taskId}: ${(err as Error).message}`)
+      return {
+        ...task,
+        threadHistory: [],
+        threadContextText: '',
+      }
+    })
+
+    if (threadAlreadyTerminal(hydratedTask.threadHistory)) {
+      console.log(`[${this.name}] Skipping historical task ${task.taskId} because the thread already reached a terminal state`)
+      return
+    }
+
+    this.activeTaskCount += 1
+    const taskSessionName = this.resolveTaskSessionName(hydratedTask)
     let activeStream: Awaited<ReturnType<AampClient['createStream']>> | null = null
+    let streamWrites: Promise<void> = Promise.resolve()
+    const streamTextState: StreamTextRenderState = { hasContent: false }
+    let currentPhase: AcpTextChunk['channel'] | null = null
+
+    const queueStreamAppend = (
+      type: 'text.delta' | 'progress' | 'status',
+      payload: Record<string, unknown>,
+    ) => {
+      if (!this.client || !activeStream) return
+      const streamId = activeStream.streamId
+
+      streamWrites = streamWrites
+        .then(async () => {
+          await this.client!.appendStreamEvent({
+            streamId,
+            type,
+            payload,
+          })
+        })
+        .catch((err) => {
+          console.warn(
+            `[${this.name}] Failed to append ${type} stream event for ${task.taskId}: ${(err as Error).message}`,
+          )
+        })
+    }
+
+    const flushStreamWrites = async () => {
+      await streamWrites
+    }
+
+    const queuePhaseStatus = (channel: AcpTextChunk['channel']) => {
+      if (currentPhase === channel) return
+      currentPhase = channel
+      queueStreamAppend('status', {
+        state: 'running',
+        label: buildPhaseStatusLabel(channel),
+      })
+    }
 
     try {
       activeStream = await this.client.createStream({
@@ -249,26 +436,49 @@ export class AgentBridge {
         payload: { state: 'running', label: 'ACP task started' },
       })
 
-      const hydratedTask = await this.client.hydrateTaskDispatch(task).catch((err) => {
-        console.warn(`[${this.name}] Failed to load thread history for ${task.taskId}: ${(err as Error).message}`)
-        return {
-          ...task,
-          threadHistory: [],
-          threadContextText: '',
-        }
-      })
-
       const prompt = buildPrompt(hydratedTask, hydratedTask.threadContextText)
+      await this.acpx.ensureSession(this.agentConfig.acpCommand, taskSessionName)
       await this.client.appendStreamEvent({
         streamId: activeStream.streamId,
         type: 'progress',
         payload: { value: 0.2, label: 'Prompt sent to ACP agent' },
       })
-      const result = await this.acpx.prompt(this.agentConfig.acpCommand, this.sessionName, prompt)
+      const result = await this.acpx.prompt(this.agentConfig.acpCommand, taskSessionName, prompt, {
+        onTextChunk: (chunk) => {
+          queuePhaseStatus(chunk.channel)
+          const rendered = renderTextChunk(chunk, streamTextState)
+          if (!rendered) return
+          queueStreamAppend('text.delta', {
+            text: rendered,
+            channel: chunk.channel,
+            ...(chunk.messageId ? { messageId: chunk.messageId } : {}),
+          })
+        },
+        onToolUpdate: (update) => {
+          queueStreamAppend('progress', {
+            label: buildToolProgressLabel(update),
+            ...(update.title ? { title: update.title } : {}),
+            ...(update.status ? { status: update.status } : {}),
+            ...(update.kind ? { kind: update.kind } : {}),
+            ...(update.toolCallId ? { toolCallId: update.toolCallId } : {}),
+          })
+        },
+        onPlanUpdate: (entries) => {
+          queuePhaseStatus('thought')
+          queueStreamAppend('text.delta', {
+            text: `${streamTextState.hasContent ? '\n\n' : ''}${formatPlanUpdate(entries)}`,
+            channel: 'thought',
+          })
+          streamTextState.hasContent = true
+          streamTextState.currentChannel = 'thought'
+          streamTextState.currentMessageId = undefined
+        },
+      })
       if (this.cancelledTaskIds.has(task.taskId)) {
         console.warn(`[${this.name}] Dropping task ${task.taskId} result because the task was cancelled`)
         return
       }
+      await flushStreamWrites()
       await this.client.appendStreamEvent({
         streamId: activeStream.streamId,
         type: 'progress',
@@ -278,6 +488,17 @@ export class AgentBridge {
 
       if (parsed.isHelp) {
         // Agent needs help
+        if (!result.streamedAssistantText && parsed.question) {
+          queuePhaseStatus('assistant')
+          queueStreamAppend('text.delta', {
+            text: renderTextChunk(
+              { channel: 'assistant', text: parsed.question },
+              streamTextState,
+            ),
+            channel: 'assistant',
+          })
+          await flushStreamWrites()
+        }
         await this.client.appendStreamEvent({
           streamId: activeStream.streamId,
           type: 'status',
@@ -315,12 +536,16 @@ export class AgentBridge {
         }
 
         // Task completed
-        if (parsed.output) {
-          await this.client.appendStreamEvent({
-            streamId: activeStream.streamId,
-            type: 'text.delta',
-            payload: { text: parsed.output },
+        if (parsed.output && !result.streamedAssistantText) {
+          queuePhaseStatus('assistant')
+          queueStreamAppend('text.delta', {
+            text: renderTextChunk(
+              { channel: 'assistant', text: parsed.output },
+              streamTextState,
+            ),
+            channel: 'assistant',
           })
+          await flushStreamWrites()
         }
         await this.client.closeStream({
           streamId: activeStream.streamId,
@@ -340,6 +565,7 @@ export class AgentBridge {
       const errorMsg = (err as Error).message
       console.error(`[${this.name}] Task ${task.taskId} error: ${errorMsg}`)
       try {
+        await flushStreamWrites()
         if (activeStream) {
           await this.client.closeStream({
             streamId: activeStream.streamId,
@@ -356,7 +582,7 @@ export class AgentBridge {
         })
       } catch { /* best effort */ }
     } finally {
-      this.processing = false
+      this.activeTaskCount = Math.max(0, this.activeTaskCount - 1)
     }
   }
 
