@@ -70,7 +70,6 @@ interface PendingTask {
   threadContextText: string
   priority: TaskPriority
   expiresAt?: string
-  contextLinks: string[]
   messageId: string
   receivedAt: string  // ISO-8601
   awaitingHelpReply?: boolean
@@ -482,7 +481,6 @@ export function queuePendingTask(
     threadContextText: task.threadContextText ?? '',
     priority: task.priority ?? 'normal',
     ...(task.expiresAt ? { expiresAt: task.expiresAt } : {}),
-    contextLinks: task.contextLinks ?? [],
     messageId: task.messageId ?? '',
     receivedAt: new Date().toISOString(),
   })
@@ -981,7 +979,6 @@ export default {
               ? `Agent ${result.from} completed the sub-task.\n\nOutput:\n${truncatedOutput}${attachmentInfo}`
               : `Agent ${result.from} rejected the sub-task.\n\nReason: ${result.errorMsg ?? 'unknown'}`,
             priority: 'urgent',
-            contextLinks: [],
             messageId: '',
             receivedAt: new Date().toISOString(),
           })
@@ -1065,7 +1062,6 @@ export default {
           title: `Sub-task needs help: ${sub?.title ?? help.taskId}`,
           bodyText: `Agent ${help.from} is asking for help on the sub-task.\n\nQuestion: ${help.question}\nBlocked reason: ${help.blockedReason}${help.suggestedOptions?.length ? `\nSuggested options: ${help.suggestedOptions.join(', ')}` : ''}`,
           priority: 'urgent',
-          contextLinks: [],
           messageId: '',
           receivedAt: new Date().toISOString(),
         })
@@ -1408,9 +1404,6 @@ export default {
           dispatchContextLines,
           task.threadContextText ? `${task.threadContextText}` : '',
           task.bodyText ? `Latest user message:\n${task.bodyText}` : '',
-          task.contextLinks.length
-            ? `Context Links:\n${task.contextLinks.map((l) => `  - ${l}`).join('\n')}`
-            : '',
           task.expiresAt ? `Expires: ${task.expiresAt}` : `Expires: none`,
           `Received: ${task.receivedAt}`,
           otherActionableTasks.length > 0 ? `\n(+${otherActionableTasks.length} more tasks queued)` : '',
@@ -1449,9 +1442,6 @@ export default {
           dispatchContextLines,
           task.threadContextText ? `${task.threadContextText}` : '',
           task.bodyText ? `Description:\n${task.bodyText}` : '',
-          task.contextLinks.length
-            ? `Context Links:\n${task.contextLinks.map((l) => `  - ${l}`).join('\n')}`
-            : '',
           task.expiresAt ? `Expires: ${task.expiresAt}` : `Expires: none`,
           `Received: ${task.receivedAt}`,
           otherActionableTasks.length > 0 ? `\n(+${otherActionableTasks.length} more tasks queued)` : '',
@@ -1883,10 +1873,6 @@ export default {
           parentTaskId: { type: 'string', description: 'If you are processing a pending AAMP task, pass its Task ID here to establish parent-child nesting. Omit for top-level tasks.' },
           priority: { type: 'string', enum: ['urgent', 'high', 'normal'], description: 'Task priority (optional)' },
           expiresAt: { type: 'string', description: 'Absolute expiry time in ISO 8601 format (optional)' },
-          contextLinks: {
-            type: 'array', items: { type: 'string' },
-            description: 'URLs providing context (optional)',
-          },
           attachments: {
             type: 'array',
             description: 'File attachments. Each item: { filename, contentType, path (local file path) }',
@@ -1904,7 +1890,7 @@ export default {
       },
       execute: async (_id: unknown, params: {
         to: string; title: string; bodyText?: string;
-        parentTaskId?: string; priority?: TaskPriority; expiresAt?: string; contextLinks?: string[];
+        parentTaskId?: string; priority?: TaskPriority; expiresAt?: string;
         attachments?: Array<{ filename: string; contentType?: string; path: string }>
       }) => {
         if (!aampClient?.isConnected()) {
@@ -1928,7 +1914,6 @@ export default {
             parentTaskId: params.parentTaskId,
             priority: params.priority,
             expiresAt: params.expiresAt,
-            contextLinks: params.contextLinks,
             attachments,
           })
 

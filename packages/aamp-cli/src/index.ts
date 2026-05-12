@@ -99,7 +99,7 @@ Usage:
   aamp-cli directory-list [--profile NAME] [--include-self] [--limit N]
   aamp-cli directory-search --query TEXT [--profile NAME] [--include-self] [--limit N]
   aamp-cli directory-update [--profile NAME] [--summary TEXT] [--card-text TEXT] [--card-file PATH]
-  aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--priority urgent|high|normal] [--expires-at ISO] [--context-link URL]...
+  aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--priority urgent|high|normal] [--expires-at ISO]
   aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TEXT] [--error TEXT]
   aamp-cli help --to EMAIL --task-id ID --question TEXT [--reason TEXT] [--option TEXT]...
   aamp-cli cancel --to EMAIL --task-id ID [--body TEXT]
@@ -129,7 +129,7 @@ Usage:
   aamp-cli node show [--node NAME]
   aamp-cli node serve [--node NAME]
   aamp-cli node sync-card [--node NAME]
-  aamp-cli node call [--node NAME | --profile NAME] --target EMAIL --command NAME [--title TEXT] [--stream none|status-only|full] [--task-id ID] [--priority urgent|high|normal] [--expires-at ISO] [--context-link URL]... [--dispatch-context KEY=VALUE]... [--arg KEY=VALUE]... [--attachment SLOT=PATH]... [--any_other_key VALUE]...
+  aamp-cli node call [--node NAME | --profile NAME] --target EMAIL --command NAME [--title TEXT] [--stream none|status-only|full] [--task-id ID] [--priority urgent|high|normal] [--expires-at ISO] [--dispatch-context KEY=VALUE]... [--arg KEY=VALUE]... [--attachment SLOT=PATH]... [--any_other_key VALUE]...
   aamp-cli node command list [--node NAME]
   aamp-cli node command add [--node NAME] [--spec-file PATH] [--env KEY=VALUE]...
   aamp-cli node command remove [--node NAME] --command NAME
@@ -301,7 +301,6 @@ interface NodeCallOptions {
   streamMode?: NodeCallStreamMode
   priority?: SendTaskOptions['priority']
   expiresAt?: string
-  contextLinks?: string[]
   dispatchContext?: Record<string, string>
   parentTaskId?: string
   attachments?: AampAttachment[]
@@ -579,7 +578,6 @@ export function printDispatch(task: {
   priority?: 'urgent' | 'high' | 'normal'
   expiresAt?: string
   bodyText?: string
-  contextLinks?: string[]
   attachments?: ReceivedAttachment[]
   dispatchContext?: Record<string, string>
   threadContextText?: string
@@ -589,7 +587,6 @@ export function printDispatch(task: {
   logger.log(`  title: ${task.title}`)
   logger.log(`  priority: ${task.priority}`)
   if (task.expiresAt) logger.log(`  expiresAt: ${task.expiresAt}`)
-  if (task.contextLinks?.length) logger.log(`  contextLinks: ${task.contextLinks.join(', ')}`)
   if (task.dispatchContext && Object.keys(task.dispatchContext).length) {
     logger.log(`  dispatchContext: ${JSON.stringify(task.dispatchContext)}`)
   }
@@ -744,7 +741,6 @@ export async function runDispatch(args: ParsedArgs): Promise<void> {
     bodyText: firstArg(args, 'body'),
     priority: firstArg(args, 'priority') as SendTaskOptions['priority'] | undefined,
     expiresAt: firstArg(args, 'expires-at'),
-    contextLinks: allArgs(args, 'context-link'),
   }
   const result = await client.sendTask(payload)
   console.log(JSON.stringify(result, null, 2))
@@ -991,7 +987,6 @@ async function buildRegisteredCommandOptionsFromCli(args: ParsedArgs): Promise<N
     'task-id',
     'priority',
     'expires-at',
-    'context-link',
     'dispatch-context',
     'arg',
     'attachment',
@@ -1053,7 +1048,6 @@ async function buildRegisteredCommandOptionsFromCli(args: ParsedArgs): Promise<N
     taskId: firstArg(args, 'task-id'),
     priority: firstArg(args, 'priority') as NodeCallOptions['priority'] | undefined,
     expiresAt: firstArg(args, 'expires-at'),
-    contextLinks: allArgs(args, 'context-link'),
     ...(Object.keys(dispatchContext).length ? { dispatchContext } : {}),
     ...(Object.keys(directArgs).length ? { args: directArgs } : {}),
     ...(inputs.length ? { inputs } : {}),

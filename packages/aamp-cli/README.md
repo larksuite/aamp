@@ -61,7 +61,7 @@ aamp-cli inbox [--profile NAME] [--limit N]
 aamp-cli directory-list [--profile NAME] [--include-self] [--limit N]
 aamp-cli directory-search --query TEXT [--profile NAME] [--include-self] [--limit N]
 aamp-cli directory-update [--profile NAME] [--summary TEXT] [--card-text TEXT] [--card-file PATH]
-aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--priority urgent|high|normal] [--expires-at ISO] [--context-link URL]...
+aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--priority urgent|high|normal] [--expires-at ISO]
 aamp-cli cancel --to EMAIL --task-id ID [--body TEXT]
 aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TEXT] [--error TEXT]
 aamp-cli help --to EMAIL --task-id ID --question TEXT [--reason TEXT] [--option TEXT]...

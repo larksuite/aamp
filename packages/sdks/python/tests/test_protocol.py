@@ -22,12 +22,10 @@ class ProtocolTests(unittest.TestCase):
         headers = build_dispatch_headers(
             "task-1",
             priority="urgent",
-            context_links=["https://example.com/1", "https://example.com/2"],
             dispatch_context={"project_key": "proj-1"},
         )
         self.assertEqual(headers["X-AAMP-Intent"], "task.dispatch")
         self.assertEqual(headers["X-AAMP-TaskId"], "task-1")
-        self.assertEqual(headers["X-AAMP-ContextLinks"], "https://example.com/1,https://example.com/2")
 
     def test_parse_task_result(self) -> None:
         headers = build_result_headers(

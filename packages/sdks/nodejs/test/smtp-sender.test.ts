@@ -91,7 +91,6 @@ describe('SmtpSender', () => {
       to: 'reviewer@example.com',
       title: 'Review docs',
       bodyText: 'Please check the latest protocol.',
-      contextLinks: ['https://docs.example/task'],
     })
 
     expect(result.messageId).toBe('smtp-msg-1')
@@ -100,7 +99,6 @@ describe('SmtpSender', () => {
       subject: '[AAMP Task] Review docs',
       headers: expect.objectContaining({
         'X-AAMP-Intent': 'task.dispatch',
-        'X-AAMP-ContextLinks': 'https://docs.example/task',
       }),
     }))
   })

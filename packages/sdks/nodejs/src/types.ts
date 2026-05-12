@@ -34,7 +34,6 @@ export const AAMP_HEADER = {
   INTENT: 'X-AAMP-Intent',
   TASK_ID: 'X-AAMP-TaskId',
   SESSION_KEY: 'X-AAMP-Session-Key',
-  CONTEXT_LINKS: 'X-AAMP-ContextLinks',
   DISPATCH_CONTEXT: 'X-AAMP-Dispatch-Context',
   PRIORITY: 'X-AAMP-Priority',
   EXPIRES_AT: 'X-AAMP-Expires-At',
@@ -70,7 +69,6 @@ export interface TaskDispatch {
   title: string
   priority: TaskPriority
   expiresAt?: string
-  contextLinks: string[]
   dispatchContext?: Record<string, string>
   parentTaskId?: string
   // Email metadata
@@ -375,7 +373,6 @@ export interface SendTaskOptions {
   /** Absolute expiry timestamp. */
   expiresAt?: string
   sessionKey?: string
-  contextLinks?: string[]
   dispatchContext?: Record<string, string>
   parentTaskId?: string
   /** Attachments to include with the dispatch email */
@@ -410,7 +407,6 @@ export interface SendRegisteredCommandOptions {
   priority?: TaskPriority
   expiresAt?: string
   sessionKey?: string
-  contextLinks?: string[]
   dispatchContext?: Record<string, string>
   parentTaskId?: string
   attachments?: AampAttachment[]

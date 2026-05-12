@@ -401,7 +401,6 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       priority: opts.priority,
       expiresAt: opts.expiresAt,
       sessionKey: opts.sessionKey,
-      contextLinks: opts.contextLinks,
       dispatchContext: opts.dispatchContext,
       parentTaskId: opts.parentTaskId,
       attachments: opts.attachments,

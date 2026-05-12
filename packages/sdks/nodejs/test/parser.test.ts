@@ -28,8 +28,6 @@ describe('parseAampHeaders', () => {
           'X-AAMP-Intent': 'task.dispatch',
           'X-AAMP-TaskId': 'task-uuid-1234',
           'X-AAMP-Expires-At': '2026-04-07T12:00:00.000Z',
-          'X-AAMP-ContextLinks':
-            'https://meego.example.com/issues/1,https://git.example.com/pr/456',
         },
       })
 
@@ -40,10 +38,6 @@ describe('parseAampHeaders', () => {
       expect(result.taskId).toBe('task-uuid-1234')
       expect(result.title).toBe('Review PR #456')
       expect(result.expiresAt).toBe('2026-04-07T12:00:00.000Z')
-      expect(result.contextLinks).toEqual([
-        'https://meego.example.com/issues/1',
-        'https://git.example.com/pr/456',
-      ])
       expect(result.from).toBe('meego-bot@aamp.example.com')
       expect(result.to).toBe('codereviewer@aamp.example.com')
       expect(result.messageId).toBe('<msg-123@aamp.example.com>')
@@ -59,7 +53,6 @@ describe('parseAampHeaders', () => {
           'X-AAMP-Intent': 'task.dispatch',
           'X-AAMP-TaskId': 'task-abc',
           'X-AAMP-Expires-At': '2026-04-07T12:00:00.000Z',
-          'X-AAMP-ContextLinks': '',
         },
       })
 
@@ -77,7 +70,6 @@ describe('parseAampHeaders', () => {
           'x-aamp-intent': 'task.dispatch',
           'x-aamp-taskid': 'task-lowercase',
           'x-aamp-expires-at': '2026-04-07T12:00:00.000Z',
-          'x-aamp-contextlinks': '',
         },
       })
 
@@ -95,29 +87,10 @@ describe('parseAampHeaders', () => {
           'x-aamp-intent': 'task.dispatch',
           'x-aamp-taskid': 'task-1',
           'x-aamp-expires-at': '2026-04-07T12:00:00.000Z',
-          'x-aamp-contextlinks': '',
         },
       })
 
       expect(result!.intent === 'task.dispatch' ? result!.title : '').toBe('My Task Title')
-    })
-
-    it('handles empty contextLinks gracefully', () => {
-      const result = parseAampHeaders({
-        from: 'meego-bot@aamp.example.com',
-        to: 'agent@aamp.example.com',
-        messageId: 'msg',
-        subject: 'Task',
-        headers: {
-          'x-aamp-intent': 'task.dispatch',
-          'x-aamp-taskid': 'task-1',
-          'x-aamp-expires-at': '2026-04-07T12:00:00.000Z',
-          'x-aamp-contextlinks': '',
-        },
-      })
-
-      if (result?.intent !== 'task.dispatch') throw new Error('wrong intent')
-      expect(result.contextLinks).toEqual([])
     })
 
     it('omits expiresAt when the header is absent', () => {
@@ -129,7 +102,6 @@ describe('parseAampHeaders', () => {
         headers: {
           'x-aamp-intent': 'task.dispatch',
           'x-aamp-taskid': 'task-1',
-          'x-aamp-contextlinks': '',
         },
       })
 
@@ -308,13 +280,11 @@ describe('buildDispatchHeaders', () => {
     const headers = buildDispatchHeaders({
       taskId: 'task-123',
       expiresAt: '2026-04-07T12:00:00.000Z',
-      contextLinks: ['https://a.com', 'https://b.com'],
     })
 
     expect(headers['X-AAMP-Intent']).toBe('task.dispatch')
     expect(headers['X-AAMP-TaskId']).toBe('task-123')
     expect(headers['X-AAMP-Expires-At']).toBe('2026-04-07T12:00:00.000Z')
-    expect(headers['X-AAMP-ContextLinks']).toBe('https://a.com,https://b.com')
   })
 })
 
@@ -370,7 +340,6 @@ describe('round-trip: build headers then parse them', () => {
     const built = buildDispatchHeaders({
       taskId: 'task-rt-1',
       expiresAt: '2026-04-07T12:00:00.000Z',
-      contextLinks: ['https://link1.com', 'https://link2.com'],
     })
 
     const parsed = parseAampHeaders({
@@ -384,7 +353,6 @@ describe('round-trip: build headers then parse them', () => {
     if (parsed?.intent !== 'task.dispatch') throw new Error('expected task.dispatch')
     expect(parsed.taskId).toBe('task-rt-1')
     expect(parsed.expiresAt).toBe('2026-04-07T12:00:00.000Z')
-    expect(parsed.contextLinks).toEqual(['https://link1.com', 'https://link2.com'])
   })
 
   it('round-trips task.result', () => {

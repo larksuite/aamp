@@ -14,7 +14,6 @@ const (
 	HeaderVersion       = "X-AAMP-Version"
 	HeaderIntent        = "X-AAMP-Intent"
 	HeaderTaskID        = "X-AAMP-TaskId"
-	HeaderContextLinks  = "X-AAMP-ContextLinks"
 	HeaderDispatchCtx   = "X-AAMP-Dispatch-Context"
 	HeaderPriority      = "X-AAMP-Priority"
 	HeaderExpiresAt     = "X-AAMP-Expires-At"
@@ -85,7 +84,7 @@ func SerializeDispatchContextHeader(context map[string]string) string {
 	return strings.Join(parts, "; ")
 }
 
-func BuildDispatchHeaders(taskID, priority, expiresAt string, contextLinks []string, dispatchContext map[string]string, parentTaskID string) map[string]string {
+func BuildDispatchHeaders(taskID, priority, expiresAt string, dispatchContext map[string]string, parentTaskID string) map[string]string {
 	headers := map[string]string{
 		HeaderVersion: AAMPProtocolVersion,
 		HeaderIntent:  "task.dispatch",
@@ -99,9 +98,6 @@ func BuildDispatchHeaders(taskID, priority, expiresAt string, contextLinks []str
 	}
 	if expiresAt != "" {
 		headers[HeaderExpiresAt] = expiresAt
-	}
-	if len(contextLinks) > 0 {
-		headers[HeaderContextLinks] = strings.Join(contextLinks, ",")
 	}
 	if serialized := SerializeDispatchContextHeader(dispatchContext); serialized != "" {
 		headers[HeaderDispatchCtx] = serialized
@@ -212,7 +208,6 @@ func ParseAampHeaders(meta EmailMetadata) (*ParsedMessage, error) {
 		base.Title = strings.TrimSpace(strings.TrimPrefix(subject, "[AAMP Task]"))
 		base.Priority = firstNonEmpty(headers[strings.ToLower(HeaderPriority)], "normal")
 		base.ExpiresAt = headers[strings.ToLower(HeaderExpiresAt)]
-		base.ContextLinks = splitCSV(headers[strings.ToLower(HeaderContextLinks)])
 		base.DispatchContext = ParseDispatchContextHeader(headers[strings.ToLower(HeaderDispatchCtx)])
 		base.ParentTaskID = headers[strings.ToLower(HeaderParentTaskID)]
 		base.BodyText = normalizeBodyText(meta.BodyText)
@@ -240,19 +235,6 @@ func ParseAampHeaders(meta EmailMetadata) (*ParsedMessage, error) {
 	}
 
 	return base, nil
-}
-
-func splitCSV(value string) []string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	parts := []string{}
-	for _, item := range strings.Split(value, ",") {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			parts = append(parts, trimmed)
-		}
-	}
-	return parts
 }
 
 func firstNonEmpty(values ...string) string {

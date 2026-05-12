@@ -119,7 +119,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Review docs',
       bodyText: 'Please compare the latest protocol docs.',
       priority: 'high',
-      contextLinks: ['https://example.com/context'],
       to: 'agent@meshmail.ai',
     })).toBe(true)
 
@@ -183,7 +182,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Review docs',
       bodyText: 'Please compare the latest protocol docs.',
       priority: 'high',
-      contextLinks: ['https://example.com/context'],
       to: 'agent@meshmail.ai',
     })).toBe(true)
 
@@ -246,7 +244,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Old blocked task',
       bodyText: 'This older task should stay isolated.',
       priority: 'high',
-      contextLinks: [],
       to: 'agent@meshmail.ai',
     })).toBe(true)
 
@@ -256,7 +253,6 @@ describe('openclaw plugin runtime', () => {
       title: 'New urgent task',
       bodyText: 'This new task should own its own session.',
       priority: 'normal',
-      contextLinks: [],
       to: 'agent@meshmail.ai',
     })).toBe(true)
 
@@ -328,7 +324,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Review docs',
       bodyText: 'Please compare the latest protocol docs.',
       priority: 'high',
-      contextLinks: ['https://example.com/context'],
       to: 'agent@meshmail.ai',
     })).toBe(true)
 
@@ -338,7 +333,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Summarize docs',
       bodyText: 'Create a short summary.',
       priority: 'normal',
-      contextLinks: [],
       to: 'agent@meshmail.ai',
     })).toBe(true)
 
@@ -414,7 +408,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Need clarification',
       bodyText: 'Old task that is about to ask for help.',
       priority: 'high',
-      contextLinks: [],
       to: 'agent@meshmail.ai',
     })).toBe(true)
 
@@ -424,7 +417,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Fresh task',
       bodyText: 'This should be the next actionable task.',
       priority: 'normal',
-      contextLinks: [],
       to: 'agent@meshmail.ai',
     })).toBe(true)
 
@@ -522,7 +514,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Need clarification',
       bodyText: 'Old task that is about to ask for help.',
       priority: 'high',
-      contextLinks: [],
       to: 'agent@meshmail.ai',
     })
 
@@ -645,7 +636,6 @@ describe('openclaw plugin runtime', () => {
       title: 'Review docs',
       bodyText: 'Please compare the latest protocol docs.',
       priority: 'high',
-      contextLinks: ['https://example.com/context'],
       to: 'agent@meshmail.ai',
     })
 
@@ -794,7 +784,6 @@ describe('openclaw plugin runtime', () => {
       title: '列出目录内容',
       bodyText: '请把 ~/Downloads 目录下所有文件列给我。',
       priority: 'normal',
-      contextLinks: [],
       messageId: 'msg-dispatch-1',
       threadHistory: [
         {
@@ -818,7 +807,6 @@ describe('openclaw plugin runtime', () => {
       title: '列出目录内容',
       bodyText: '请把 ~/Downloads 目录下所有文件列给我。',
       priority: 'normal',
-      contextLinks: [],
       messageId: 'msg-dispatch-1',
     })
 

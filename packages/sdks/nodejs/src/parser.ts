@@ -234,7 +234,6 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
   const decodedSubject = decodeMimeEncodedWords(meta.subject)
 
   if (intent === 'task.dispatch') {
-    const contextLinksStr = getAampHeader(headers, AAMP_HEADER.CONTEXT_LINKS) ?? ''
     const dispatchContext = parseDispatchContextHeader(
       getAampHeader(headers, AAMP_HEADER.DISPATCH_CONTEXT),
     )
@@ -252,9 +251,6 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
       title: decodedSubject.replace(/^\[AAMP Task\]\s*/, '').trim() || 'Untitled Task',
       priority: priority === 'urgent' || priority === 'high' ? priority : 'normal',
       ...(expiresAt ? { expiresAt } : {}),
-      contextLinks: contextLinksStr
-        ? contextLinksStr.split(',').map((s) => s.trim()).filter(Boolean)
-        : [],
       ...(dispatchContext ? { dispatchContext } : {}),
       ...(parentTaskId ? { parentTaskId } : {}),
       from,
@@ -397,7 +393,6 @@ export function buildDispatchHeaders(params: {
   priority?: TaskDispatch['priority']
   expiresAt?: string
   sessionKey?: string
-  contextLinks: string[]
   dispatchContext?: Record<string, string>
   parentTaskId?: string
 }): Record<string, string> {
@@ -412,9 +407,6 @@ export function buildDispatchHeaders(params: {
   }
   if (params.sessionKey?.trim()) {
     headers[AAMP_HEADER.SESSION_KEY] = params.sessionKey.trim()
-  }
-  if (params.contextLinks.length > 0) {
-    headers[AAMP_HEADER.CONTEXT_LINKS] = params.contextLinks.join(',')
   }
   const dispatchContext = serializeDispatchContextHeader(params.dispatchContext)
   if (dispatchContext) {

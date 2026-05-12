@@ -122,7 +122,6 @@ aamp-cli dispatch \
   --title "Review PR #42" \
   --body "Please review the linked patch and summarize risks." \
   --priority high \
-  --context-link "https://github.com/org/repo/pull/42"
 ```
 
 Reply with a successful result:

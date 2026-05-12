@@ -269,7 +269,6 @@ class SmtpSender:
         task_id: str | None = None,
         priority: str = "normal",
         expires_at: str | None = None,
-        context_links: list[str] | None = None,
         dispatch_context: dict[str, str] | None = None,
         parent_task_id: str | None = None,
         attachments: list[Attachment] | None = None,
@@ -279,7 +278,6 @@ class SmtpSender:
             resolved_task_id,
             priority=priority,
             expires_at=expires_at,
-            context_links=context_links or [],
             dispatch_context=dispatch_context,
             parent_task_id=parent_task_id,
         )
@@ -290,9 +288,6 @@ class SmtpSender:
                 f"Task ID: {resolved_task_id}",
                 f"Priority: {priority}",
                 f"Expires At: {expires_at or 'none'}",
-                f"Context:\n" + "\n".join(f"  {link}" for link in (context_links or []))
-                if context_links
-                else "",
                 body_text,
                 "",
                 "--- This email was sent by AAMP. Reply directly to submit your result. ---",

@@ -361,7 +361,6 @@ describe('AampClient', () => {
       taskId: 'task-9',
       title: 'Authorized',
       priority: 'normal',
-      contextLinks: [],
       from: 'sender@meshmail.ai',
       to: 'agent@meshmail.ai',
       messageId: '<dispatch-2>',

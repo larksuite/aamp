@@ -369,7 +369,6 @@ export class SmtpSender {
       taskId,
       priority: opts.priority,
       expiresAt: opts.expiresAt,
-      contextLinks: opts.contextLinks ?? [],
       dispatchContext: opts.dispatchContext,
       parentTaskId: opts.parentTaskId,
     })
@@ -383,9 +382,6 @@ export class SmtpSender {
         `Task ID: ${taskId}`,
         `Priority: ${opts.priority ?? 'normal'}`,
         opts.expiresAt ? `Expires At: ${opts.expiresAt}` : `Expires At: none`,
-        opts.contextLinks?.length
-          ? `Context:\n${opts.contextLinks.map((l) => `  ${l}`).join('\n')}`
-          : '',
         opts.bodyText ?? '',
         ``,
         `--- This email was sent by AAMP. Reply directly to submit your result. ---`,

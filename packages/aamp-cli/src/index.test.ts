@@ -338,7 +338,6 @@ describe('aamp-cli helpers', () => {
       '--to', 'reviewer@meshmail.ai',
       '--title', 'Review PR',
       '--body', 'Please review the change.',
-      '--context-link', 'https://example.com/pr/42',
     ])
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
@@ -349,7 +348,6 @@ describe('aamp-cli helpers', () => {
       to: 'reviewer@meshmail.ai',
       title: 'Review PR',
       bodyText: 'Please review the change.',
-      contextLinks: ['https://example.com/pr/42'],
     }))
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"taskId": "task-1"'))
   })
@@ -551,7 +549,6 @@ describe('aamp-cli helpers', () => {
       from: 'dispatcher@meshmail.ai',
       title: 'Review protocol',
       priority: 'high',
-      contextLinks: ['https://example.com/context'],
       bodyText: 'Please compare the latest headers.',
     })
     await new Promise((resolve) => setTimeout(resolve, 0))

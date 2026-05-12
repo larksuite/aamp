@@ -145,7 +145,6 @@ Authorization: Basic {mailboxToken}
     "taskId": "uuid",
     "fromAgent": "meego-abc123@aamp.local",
     "title": "Review PR #42",
-    "contextLinks": ["https://github.com/org/repo/pull/42"],
     "expiresAt": "2026-03-17T09:00:00.000Z",
     "dispatchedAt": "2026-03-17T08:00:00.000Z",
     "createdAt": "2026-03-17T08:00:00.000Z"

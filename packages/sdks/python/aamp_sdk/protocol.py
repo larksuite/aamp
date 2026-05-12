@@ -14,7 +14,6 @@ AAMP_HEADER = {
     "VERSION": "X-AAMP-Version",
     "INTENT": "X-AAMP-Intent",
     "TASK_ID": "X-AAMP-TaskId",
-    "CONTEXT_LINKS": "X-AAMP-ContextLinks",
     "DISPATCH_CONTEXT": "X-AAMP-Dispatch-Context",
     "PRIORITY": "X-AAMP-Priority",
     "EXPIRES_AT": "X-AAMP-Expires-At",
@@ -176,7 +175,6 @@ def build_dispatch_headers(
     task_id: str,
     priority: str | None = None,
     expires_at: str | None = None,
-    context_links: list[str] | None = None,
     dispatch_context: Mapping[str, Any] | None = None,
     parent_task_id: str | None = None,
 ) -> dict[str, str]:
@@ -188,8 +186,6 @@ def build_dispatch_headers(
     }
     if expires_at:
         headers[AAMP_HEADER["EXPIRES_AT"]] = expires_at
-    if context_links:
-        headers[AAMP_HEADER["CONTEXT_LINKS"]] = ",".join(context_links)
     serialized_context = serialize_dispatch_context_header(dispatch_context)
     if serialized_context:
         headers[AAMP_HEADER["DISPATCH_CONTEXT"]] = serialized_context
@@ -306,11 +302,6 @@ def parse_aamp_headers(meta: Mapping[str, Any]) -> dict[str, Any] | None:
             "title": subject.replace("[AAMP Task]", "").strip() or subject,
             "priority": headers.get(AAMP_HEADER["PRIORITY"].lower(), "normal"),
             "expiresAt": headers.get(AAMP_HEADER["EXPIRES_AT"].lower()),
-            "contextLinks": [
-                item.strip()
-                for item in headers.get(AAMP_HEADER["CONTEXT_LINKS"].lower(), "").split(",")
-                if item.strip()
-            ],
             "dispatchContext": parse_dispatch_context_header(
                 headers.get(AAMP_HEADER["DISPATCH_CONTEXT"].lower())
             ),

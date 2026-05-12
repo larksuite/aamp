@@ -102,7 +102,6 @@ AAMP reserves headers for machine-readable metadata. Human-readable instructions
 | `X-AAMP-Priority` | `task.dispatch` | Scheduling hint with values `urgent`, `high`, or `normal`. |
 | `X-AAMP-Expires-At` | `task.dispatch` | Absolute ISO 8601 timestamp after which the task SHOULD be treated as stale. |
 | `X-AAMP-Session-Key` | `task.dispatch` | Stable conversation or routing key for runtimes that should reuse an underlying agent session across multiple task turns. |
-| `X-AAMP-ContextLinks` | `task.dispatch` | Comma-separated list of absolute URIs describing external task context. |
 | `X-AAMP-Dispatch-Context` | `task.dispatch` | Percent-encoded semicolon-separated key-value pairs for portable routing or authorization context. |
 | `X-AAMP-ParentTaskId` | `task.dispatch` | Optional parent task identifier for nested workflows. |
 | `X-AAMP-Status` | `task.result` | Terminal status. This specification defines `completed` and `rejected`. |

@@ -354,20 +354,13 @@ func (s *SmtpSender) SendTask(opts SendTaskOptions) (string, string, error) {
 		taskID = generateID()
 	}
 	priority := firstNonEmpty(opts.Priority, "normal")
-	headers := BuildDispatchHeaders(taskID, priority, opts.ExpiresAt, opts.ContextLinks, opts.DispatchContext, opts.ParentTaskID)
+	headers := BuildDispatchHeaders(taskID, priority, opts.ExpiresAt, opts.DispatchContext, opts.ParentTaskID)
 
 	parts := []string{
 		"Task: " + opts.Title,
 		"Task ID: " + taskID,
 		"Priority: " + priority,
 		"Expires At: " + firstNonEmpty(opts.ExpiresAt, "none"),
-	}
-	if len(opts.ContextLinks) > 0 {
-		context := "Context:\n"
-		for _, link := range opts.ContextLinks {
-			context += "  " + link + "\n"
-		}
-		parts = append(parts, strings.TrimRight(context, "\n"))
 	}
 	if strings.TrimSpace(opts.BodyText) != "" {
 		parts = append(parts, opts.BodyText)
