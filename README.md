@@ -150,7 +150,7 @@ The setup wizard will:
 - scan your machine for known ACP agents
 - let you choose which installed agents to bridge
 - register mailbox identities for the selected agents
-- write a local `bridge.json` config and credentials under `~/.acp-bridge/`
+- write config under `~/.aamp/acp-bridge/config.json` and credentials under `~/.aamp/acp-bridge/credentials/`
 
 Start the bridge:
 
@@ -160,7 +160,31 @@ npx aamp-acp-bridge start
 
 Then open an AAMP-compatible mailbox UI such as `meshmail.ai`, send a `task.dispatch` message to the generated agent mailbox, and wait for the reply. If the agent receives the message, runs the task, and sends a `task.result` email back into the thread, you have a full end-to-end AAMP loop.
 
-### Option 2: Connect OpenClaw directly
+### Option 2: Connect a direct CLI agent with CLI Bridge
+
+Use CLI Bridge when the agent is exposed as a command-line program rather than an ACP runtime. Profiles describe the command, args, stdin, environment, working directory, timeout, output cleanup, and optional stream parser.
+
+```bash
+npx aamp-cli-bridge profile-maker
+npx aamp-cli-bridge init
+npx aamp-cli-bridge start
+```
+
+The setup flow is:
+
+- `profile-maker`: create a custom profile under `~/.aamp/cli-bridge/profiles/` when a built-in profile is not enough
+- `init`: scan built-in, user-created, and already configured profiles; select one or more agents with arrow keys, Space, and Enter
+- `start`: provision or reuse each selected agent mailbox and begin handling `task.dispatch`
+
+Built-in profiles include `claude`, `codex`, `gemini`, and `codem`. Streaming profiles can parse SSE or NDJSON output and map standard text, delta, tool, usage, result, and done events into AAMP stream events before sending the final `task.result`.
+
+Default storage:
+
+- config: `~/.aamp/cli-bridge/config.json`
+- credentials: `~/.aamp/cli-bridge/credentials/<agent>.json`
+- user profiles: `~/.aamp/cli-bridge/profiles/<profile>.json`
+
+### Option 3: Connect OpenClaw directly
 
 ```bash
 npx aamp-openclaw-plugin init
@@ -168,7 +192,7 @@ npx aamp-openclaw-plugin init
 
 The installer will provision an AAMP mailbox for your OpenClaw agent, write the plugin config automatically, and make the agent ready to receive `task.dispatch` mail. From there, the same validation path applies: send the agent a task email from an AAMP-compatible mailbox platform and confirm that a result arrives back in the thread.
 
-### Option 3: Connect a local Feishu bot to an existing agent
+### Option 4: Connect a local Feishu bot to an existing agent
 
 ```bash
 npx aamp-feishu-bridge init
@@ -179,7 +203,7 @@ This bridge keeps the Feishu app credentials on the user's own machine, provisio
 
 Each message turn is sent as a fresh `task.dispatch`, while sticky chat continuity is carried through the standalone `X-AAMP-Session-Key` header. That lets compatible runtimes keep the same underlying agent session across multiple turns without violating the one-task-per-dispatch lifecycle.
 
-### Option 4: Connect a local WeChat bot to an existing agent
+### Option 5: Connect a local WeChat bot to an existing agent
 
 ```bash
 npx aamp-wechat-bridge init
@@ -189,7 +213,7 @@ npx aamp-wechat-bridge run
 
 This bridge keeps WeChat bot credentials on the user's own machine, authenticates through terminal QR scan, and forwards direct-message chat turns to a target AAMP agent. Like the Feishu bridge, every chat turn is a new `task.dispatch`, while sticky conversation continuity is carried through `X-AAMP-Session-Key`.
 
-### Option 5: Build a minimal worker with the SDK
+### Option 6: Build a minimal worker with the SDK
 
 If you are integrating AAMP into your own runtime instead of bridging an existing agent, start with the SDK:
 
@@ -281,7 +305,7 @@ func main() {
 }
 ```
 
-### Option 4: Expose a constrained local command node
+### Option 7: Expose a constrained local command node
 
 If you need to connect a machine that does not run a long-lived agent runtime,
 `aamp-cli` can expose the local host as a **registered-command node**.
@@ -315,7 +339,7 @@ The CLI assembles a valid `registered-command/v1` dispatch body, attaches any
 referenced files, and streams progress back through `task.stream.opened` and
 the final `task.result`.
 
-### Option 5: Inspect the protocol manually from the CLI
+### Option 8: Inspect the protocol manually from the CLI
 
 If you want to inspect the wire protocol directly, the CLI is still useful for manual send/listen flows and debugging:
 
@@ -347,6 +371,7 @@ Included:
 - [packages/aamp-cli](./packages/aamp-cli) for mailbox profiles, local command nodes, and manual protocol inspection
 - [packages/aamp-openclaw-plugin](./packages/aamp-openclaw-plugin)
 - [packages/aamp-acp-bridge](./packages/aamp-acp-bridge)
+- [packages/aamp-cli-bridge](./packages/aamp-cli-bridge)
 - [packages/aamp-feishu-bridge](./packages/aamp-feishu-bridge)
 - [packages/aamp-wechat-bridge](./packages/aamp-wechat-bridge)
 - [skills/aamp](./skills/aamp/SKILL.md) for agent runtimes that consume Skill-style operating instructions
@@ -359,6 +384,7 @@ flowchart TB
     NODE --> CLI["aamp-cli"]
     NODE --> OCP["aamp-openclaw-plugin"]
     NODE --> ACP["aamp-acp-bridge"]
+    NODE --> CLIB["aamp-cli-bridge"]
     NODE --> FEI["aamp-feishu-bridge"]
     NODE --> WX["aamp-wechat-bridge"]
 ```
@@ -440,6 +466,14 @@ npm install
 npm run build
 ```
 
+CLI bridge:
+
+```bash
+cd packages/aamp-cli-bridge
+npm install
+npm run build
+```
+
 Feishu bridge:
 
 ```bash
@@ -499,6 +533,7 @@ packages/
   aamp-cli/
   aamp-openclaw-plugin/
   aamp-acp-bridge/
+  aamp-cli-bridge/
   aamp-feishu-bridge/
 ```
 

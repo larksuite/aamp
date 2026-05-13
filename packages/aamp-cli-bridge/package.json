@@ -1,0 +1,30 @@
+{
+  "name": "aamp-cli-bridge",
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "version": "0.1.1",
+  "description": "Bridge direct CLI agents into the AAMP email network with profile-driven command invocation",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "aamp-cli-bridge": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "aamp-sdk": "file:../sdks/nodejs",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.3"
+  }
+}

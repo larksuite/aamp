@@ -1,0 +1,112 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { z } from 'zod'
+
+export const cliProfileDefinitionSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().optional(),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  stdin: z.string().optional(),
+  env: z.record(z.string()).optional(),
+  cwd: z.string().optional(),
+  shell: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  successExitCodes: z.array(z.number().int()).optional(),
+  stream: z.object({
+    format: z.enum(['sse', 'ndjson']),
+    enabled: z.boolean().optional(),
+  }).optional(),
+  output: z.object({
+    includeStderr: z.boolean().optional(),
+    stripAnsi: z.boolean().optional(),
+    trim: z.boolean().optional(),
+  }).optional(),
+})
+
+const senderPolicySchema = z.object({
+  sender: z.string().email(),
+  dispatchContextRules: z.record(z.array(z.string().min(1))).optional(),
+})
+
+const agentConfigSchema = z.object({
+  name: z.string().min(1),
+  cliProfile: z.union([z.string().min(1), cliProfileDefinitionSchema]),
+  slug: z.string().regex(/^[a-z0-9-]+$/).optional(),
+  description: z.string().optional(),
+  summary: z.string().optional(),
+  cardText: z.string().optional(),
+  cardFile: z.string().optional(),
+  credentialsFile: z.string().optional(),
+  senderWhitelist: z.array(z.string().email()).optional(),
+  senderPolicies: z.array(senderPolicySchema).optional(),
+  taskDispatchConcurrency: z.number().int().positive().optional(),
+})
+
+const bridgeConfigSchema = z.object({
+  aampHost: z.string().url(),
+  rejectUnauthorized: z.boolean().default(false),
+  profiles: z.record(cliProfileDefinitionSchema).optional(),
+  agents: z.array(agentConfigSchema).min(1),
+})
+
+export type CliProfileDefinition = z.infer<typeof cliProfileDefinitionSchema>
+export type SenderPolicy = z.infer<typeof senderPolicySchema>
+export type AgentConfig = z.infer<typeof agentConfigSchema>
+export type BridgeConfig = z.infer<typeof bridgeConfigSchema>
+
+function normalizeSenderPolicies(
+  senderPolicies: SenderPolicy[] | undefined,
+  senderWhitelist: string[] | undefined,
+): SenderPolicy[] | undefined {
+  const sourcePolicies = senderPolicies?.length
+    ? senderPolicies
+    : senderWhitelist?.length
+      ? senderWhitelist.map((sender): SenderPolicy => ({ sender }))
+      : undefined
+
+  if (!sourcePolicies?.length) return undefined
+
+  const normalized = sourcePolicies
+    .map((policy) => {
+      let dispatchContextRules: Record<string, string[]> | undefined
+      if (policy.dispatchContextRules) {
+        dispatchContextRules = Object.fromEntries(
+          Object.entries(policy.dispatchContextRules)
+            .map(([key, values]) => [
+              key.trim().toLowerCase(),
+              values.map((value) => value.trim()).filter(Boolean),
+            ])
+            .filter(([key, values]) => Boolean(key) && values.length > 0),
+        )
+      }
+
+      return {
+        sender: policy.sender.trim().toLowerCase(),
+        ...(dispatchContextRules && Object.keys(dispatchContextRules).length > 0
+          ? { dispatchContextRules }
+          : {}),
+      }
+    })
+    .filter((policy) => Boolean(policy.sender))
+
+  return normalized.length > 0 ? normalized : undefined
+}
+
+function normalizeAgentConfig(agent: AgentConfig): AgentConfig {
+  return {
+    ...agent,
+    senderPolicies: normalizeSenderPolicies(agent.senderPolicies, agent.senderWhitelist),
+  }
+}
+
+export function loadConfig(path: string): BridgeConfig {
+  if (!existsSync(path)) {
+    throw new Error(`Config file not found: ${path}. Run 'aamp-cli-bridge init' first.`)
+  }
+  const raw = JSON.parse(readFileSync(path, 'utf-8'))
+  const parsed = bridgeConfigSchema.parse(raw)
+  return {
+    ...parsed,
+    agents: parsed.agents.map(normalizeAgentConfig),
+  }
+}

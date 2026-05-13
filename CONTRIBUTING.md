@@ -10,6 +10,7 @@ This repository contains the protocol definition and portable tooling around AAM
 - `aamp-cli`
 - `aamp-openclaw-plugin`
 - `aamp-acp-bridge`
+- `aamp-cli-bridge`
 
 ## Before You Start
 
@@ -35,6 +36,7 @@ cd packages/sdks/nodejs && npm install && npm run build && npm test
 cd packages/aamp-cli && npm install && npm run build
 cd packages/aamp-openclaw-plugin && npm install && npm run build
 cd packages/aamp-acp-bridge && npm install && npm run build
+cd packages/aamp-cli-bridge && npm install && npm run build
 ```
 
 ## Security
