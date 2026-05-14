@@ -261,8 +261,38 @@ export class AcpxClient {
     this.cwd = cwd ?? process.cwd()
   }
 
-  private buildAcpxArgs(agent: string, args: string[]): string[] {
-    return ['--approve-all', '--cwd', this.cwd, agent, ...args]
+  private buildAcpxArgs(agent: string, args: string[], globalArgs: string[] = []): string[] {
+    return ['--approve-all', '--cwd', this.cwd, ...globalArgs, agent, ...args]
+  }
+
+  private formatArgForLog(arg: string): string {
+    const normalized = arg.replace(/\s+/g, ' ').trim()
+    if (normalized.length <= 160) return normalized
+    return `${normalized.slice(0, 157)}...`
+  }
+
+  private formatFailedCommand(agent: string, args: string[], globalArgs: string[] = []): string {
+    return ['acpx', ...this.buildAcpxArgs(agent, args, globalArgs)]
+      .map((arg) => this.formatArgForLog(arg))
+      .join(' ')
+  }
+
+  private formatProcessFailure(
+    agent: string,
+    args: string[],
+    code: number | null,
+    stdout: string,
+    stderr: string,
+    globalArgs: string[] = [],
+  ): string {
+    const details = [
+      stderr.trim() ? `stderr: ${stderr.trim()}` : '',
+      stdout.trim() ? `stdout: ${stdout.trim()}` : '',
+    ].filter(Boolean)
+
+    return `${this.formatFailedCommand(agent, args, globalArgs)} failed (${code ?? 'unknown'}): ${
+      details.join('\n') || 'no output from acpx'
+    }`
   }
 
   /**
@@ -315,12 +345,10 @@ export class AcpxClient {
 
     return new Promise<AcpResult>((resolve, reject) => {
       const proc = spawn('acpx', this.buildAcpxArgs(agent, [
-        '--format', 'json',
-        '--json-strict',
         'prompt',
         '-s', sessionName,
         text,
-      ]), {
+      ], ['--format', 'json', '--json-strict']), {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: this.cwd,
         env: { ...process.env },
@@ -441,7 +469,14 @@ export class AcpxClient {
           || stderr.trim()
 
         if (code !== 0 && !output) {
-          reject(new Error(`acpx exited with code ${code}: ${stderr.trim()}`))
+          reject(new Error(this.formatProcessFailure(
+            agent,
+            ['prompt', '-s', sessionName, text],
+            code,
+            rawStdout,
+            stderr,
+            ['--format', 'json', '--json-strict'],
+          )))
         } else {
           resolve({
             output,
@@ -479,7 +514,13 @@ export class AcpxClient {
         const output = sanitizePromptOutput(stdout) || stderr.trim()
 
         if (code !== 0 && !output) {
-          reject(new Error(`acpx exited with code ${code}: ${stderr.trim()}`))
+          reject(new Error(this.formatProcessFailure(
+            agent,
+            ['prompt', '-s', sessionName, text],
+            code,
+            stdout,
+            stderr,
+          )))
         } else {
           resolve({
             output,
@@ -527,7 +568,7 @@ export class AcpxClient {
       proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
 
       proc.on('close', (code) => {
-        if (code !== 0) reject(new Error(`acpx ${agent} ${args.join(' ')} failed (${code}): ${stderr.trim()}`))
+        if (code !== 0) reject(new Error(this.formatProcessFailure(agent, args, code, stdout, stderr)))
         else resolve(stdout)
       })
 
