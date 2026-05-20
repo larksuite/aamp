@@ -35,9 +35,11 @@ const CODING_TOOL_ALLOWLIST = [
   'image_generate',
 ]
 const AAMP_PLUGIN_TOOL_ALLOWLIST = [
+  'aamp_directory_search',
   'aamp_send_result',
   'aamp_send_help',
   'aamp_pending_tasks',
+  'aamp_cancel_task',
   'aamp_dispatch_task',
   'aamp_check_protocol',
   'aamp_download_attachment',

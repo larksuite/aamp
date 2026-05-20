@@ -65,6 +65,8 @@ describe('openclaw plugin installer helpers', () => {
       slug: 'openclaw-agent',
     })
     expect(next.tools.allow).toContain('aamp_send_result')
+    expect(next.tools.allow).toContain('aamp_directory_search')
+    expect(next.tools.allow).toContain('aamp_cancel_task')
     expect(next.tools.allow).toContain('aamp_dispatch_task')
   })
 
