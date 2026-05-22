@@ -5,11 +5,12 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
-import { AampClient } from 'aamp-sdk'
+import { AampClient, parsePairingUrl } from 'aamp-sdk'
 import type { BridgeConfig, BridgeState } from './types.js'
 
 const CONFIG_FILENAME = 'config.json'
 const STATE_FILENAME = 'state.json'
+const DEFAULT_BRIDGE_SLUG = 'feishu-bridge'
 
 export function getBridgeHomeDir(customDir?: string): string {
   return customDir
@@ -97,6 +98,7 @@ export interface InitBridgeOptions {
   configDir?: string
   aampHost?: string
   targetAgentEmail?: string
+  pairingUrl?: string
   slug?: string
   appId?: string
   appSecret?: string
@@ -121,17 +123,21 @@ function normalizeSlug(rawValue: string): string {
     .replace(/[^a-z0-9-]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 32) || 'feishu-bridge'
+    .slice(0, 32) || DEFAULT_BRIDGE_SLUG
 }
 
 export async function initializeBridgeConfig(options: InitBridgeOptions): Promise<BridgeConfig> {
   const existing = await loadBridgeConfig(options.configDir)
 
   const aampHost = (options.aampHost ?? existing?.aampHost ?? await prompt('AAMP host', 'https://meshmail.ai')).trim()
-  const targetAgentEmail = (options.targetAgentEmail ?? existing?.targetAgentEmail ?? await prompt('Target AAMP agent email')).trim()
+  const targetInput = (options.pairingUrl ?? options.targetAgentEmail ?? existing?.targetAgentEmail ?? await prompt('Target AAMP agent email or pairing URL')).trim()
+  const pairing = targetInput.startsWith('aamp://')
+    ? parsePairingUrl(targetInput)
+    : undefined
+  const targetAgentEmail = pairing?.mailbox ?? targetInput
   const appId = (options.appId ?? existing?.feishu.appId ?? await prompt('Feishu App ID')).trim()
   const appSecret = (options.appSecret ?? existing?.feishu.appSecret ?? await prompt('Feishu App Secret')).trim()
-  const slug = normalizeSlug(options.slug ?? existing?.slug ?? await prompt('Bridge mailbox slug', 'feishu-bridge'))
+  const slug = normalizeSlug(options.slug ?? existing?.slug ?? DEFAULT_BRIDGE_SLUG)
   const domain = (options.domain ?? existing?.feishu.domain ?? '').trim() || undefined
 
   if (!targetAgentEmail) throw new Error('Target AAMP agent email is required.')
@@ -167,5 +173,17 @@ export async function initializeBridgeConfig(options: InitBridgeOptions): Promis
 
   await ensureBridgeHomeDir(options.configDir)
   await saveBridgeConfig(config, options.configDir)
+  if (pairing) {
+    const client = AampClient.fromMailboxIdentity({
+      email: config.mailbox.email,
+      smtpPassword: config.mailbox.smtpPassword,
+      baseUrl: config.mailbox.baseUrl,
+    })
+    await client.sendPairRequest({
+      to: pairing.mailbox,
+      pairCode: pairing.pairCode,
+      dispatchContextRules: pairing.dispatchContextRules ?? { source: ['feishu'] },
+    })
+  }
   return config
 }

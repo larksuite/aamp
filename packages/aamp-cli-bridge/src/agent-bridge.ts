@@ -2,6 +2,8 @@ import {
   AampClient,
   type AampAttachment,
   type AampThreadEvent,
+  type PairRequest,
+  type StructuredResultField,
   type TaskCancel,
   type TaskDispatch,
 } from 'aamp-sdk'
@@ -10,8 +12,18 @@ import { basename, dirname } from 'node:path'
 import type { AgentConfig, BridgeConfig } from './config.js'
 import { CliAgentClient } from './cli-agent-client.js'
 import { resolveCliProfile } from './cli-profiles.js'
-import { buildPrompt, parseResponse } from './prompt-builder.js'
+import { buildPrompt, parseResponse, type ResultAttachmentRef } from './prompt-builder.js'
 import { resolveCredentialsFile } from './storage.js'
+import {
+  addSenderPolicy,
+  consumePairingCode,
+  loadSenderPolicies,
+  resolvePairingFile,
+  resolveSenderPoliciesFile,
+  rulesMatch,
+  validatePairingCode,
+  type SenderPolicy,
+} from './pairing.js'
 import type { ParsedCliStreamUpdate } from './stream-parser.js'
 
 export interface AgentIdentity {
@@ -24,7 +36,7 @@ function matchSenderPolicy(
   task: TaskDispatch,
   senderPolicies: AgentConfig['senderPolicies'],
 ): { allowed: boolean; reason?: string } {
-  if (!senderPolicies?.length) return { allowed: true }
+  if (!senderPolicies?.length) return { allowed: false, reason: 'no configured senderPolicies' }
 
   const sender = task.from.toLowerCase()
   const policy = senderPolicies.find((item) => item.sender.trim().toLowerCase() === sender)
@@ -51,10 +63,129 @@ function matchSenderPolicy(
   return { allowed: true }
 }
 
+function matchPairedSenderPolicy(
+  task: TaskDispatch,
+  senderPolicies: SenderPolicy[],
+): { allowed: boolean; reason?: string } {
+  if (senderPolicies.length === 0) return { allowed: false, reason: 'no paired sender policies configured' }
+
+  const sender = task.from.toLowerCase()
+  const policy = senderPolicies.find((item) => item.sender.trim().toLowerCase() === sender)
+  if (!policy) {
+    return { allowed: false, reason: `sender ${task.from} is not paired` }
+  }
+
+  if (!rulesMatch(policy.dispatchContextRules ?? {}, task.dispatchContext)) {
+    return { allowed: false, reason: `dispatchContext does not match paired sender policy for ${task.from}` }
+  }
+
+  return { allowed: true }
+}
+
+function matchCombinedSenderPolicy(
+  task: TaskDispatch,
+  configuredPolicies: AgentConfig['senderPolicies'],
+  pairedPolicies: SenderPolicy[],
+): { allowed: boolean; reason?: string } {
+  const hasConfiguredPolicies = (configuredPolicies?.length ?? 0) > 0
+  const hasPairedPolicies = pairedPolicies.length > 0
+  if (!hasConfiguredPolicies && !hasPairedPolicies) {
+    return { allowed: false, reason: 'no sender policy configured' }
+  }
+
+  const configuredDecision = hasConfiguredPolicies
+    ? matchSenderPolicy(task, configuredPolicies)
+    : { allowed: false, reason: 'no configured senderPolicies' }
+  const pairedDecision = hasPairedPolicies
+    ? matchPairedSenderPolicy(task, pairedPolicies)
+    : { allowed: false, reason: 'no paired sender policies configured' }
+  if (pairedDecision.allowed) return pairedDecision
+  if (configuredDecision.allowed) return configuredDecision
+  return configuredDecision.reason ? configuredDecision : pairedDecision
+}
+
+export interface AgentBridgeStartOptions {
+  quiet?: boolean
+}
+
+interface HandleEventOptions {
+  historical?: boolean
+}
+
 function threadAlreadyTerminal(events: AampThreadEvent[] | undefined): boolean {
   return (events ?? []).some((event) =>
     event.intent === 'task.result' || event.intent === 'task.cancel',
   )
+}
+
+function threadAlreadyPairResponded(events: AampThreadEvent[] | undefined): boolean {
+  return (events ?? []).some((event) => event.intent === 'pair.respond')
+}
+
+function sanitizeAttachmentFilename(value: string | undefined, path: string): string {
+  const fallback = basename(path).replace(/[\r\n]/g, ' ').trim()
+  const fromValue = value?.replace(/[\r\n]/g, ' ').trim()
+  if (!fromValue) return fallback
+  return basename(fromValue) || fallback
+}
+
+function sanitizeContentType(value: string | undefined): string {
+  const normalized = value?.replace(/[\r\n]/g, '').trim()
+  return normalized || 'application/octet-stream'
+}
+
+function mergeAttachmentRefs(files: string[], attachmentRefs?: ResultAttachmentRef[]): ResultAttachmentRef[] {
+  const byKey = new Map<string, ResultAttachmentRef>()
+
+  for (const file of files) {
+    byKey.set(file, { path: file })
+  }
+
+  for (const attachment of attachmentRefs ?? []) {
+    byKey.set(attachment.path, attachment)
+  }
+
+  return [...byKey.values()]
+}
+
+function isAttachmentStructuredField(field: { fieldTypeKey?: string }): boolean {
+  return /(attachment|file)/i.test(field.fieldTypeKey ?? '')
+}
+
+function fillStructuredResultAttachmentFilenames(
+  structuredResult: StructuredResultField[] | undefined,
+  attachments: AampAttachment[],
+): StructuredResultField[] | undefined {
+  if (!structuredResult?.length || !attachments.length) return structuredResult
+  const filenames = attachments.map((attachment) => attachment.filename)
+  return structuredResult.map((field) => {
+    if (!isAttachmentStructuredField(field) || field.attachmentFilenames?.length) return field
+    return {
+      ...field,
+      attachmentFilenames: filenames,
+    }
+  })
+}
+
+function isThreadNotFoundError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return message.includes('Thread history fetch failed: 404')
+    || message.includes('"Task not found"')
+}
+
+function formatLogTime(date = new Date()): string {
+  return date.toISOString()
+}
+
+function formatElapsed(startedAt: Date | null): string {
+  if (!startedAt) return 'n/a'
+  return `${((Date.now() - startedAt.getTime()) / 1_000).toFixed(3)}s`
+}
+
+function stringifyStreamPayload(payload: Record<string, unknown>): string {
+  if (typeof payload.text === 'string') return payload.text
+  if (typeof payload.chunk === 'string') return payload.chunk
+  return JSON.stringify(payload, null, 2)
 }
 
 export class AgentBridge {
@@ -66,6 +197,8 @@ export class AgentBridge {
   private cancelledTaskIds = new Set<string>()
   private profileLabel: string
   private streamEnabled: boolean
+  private senderPolicies: SenderPolicy[] = []
+  private isHistoricalReconcile = false
 
   constructor(
     private readonly agentConfig: AgentConfig,
@@ -96,7 +229,7 @@ export class AgentBridge {
     return fromFile || undefined
   }
 
-  private async syncDirectoryProfile(): Promise<void> {
+  private async syncDirectoryProfile(options: { quiet?: boolean } = {}): Promise<void> {
     if (!this.client) return
 
     const summary = this.agentConfig.summary?.trim() || this.agentConfig.description?.trim()
@@ -109,15 +242,24 @@ export class AgentBridge {
       ...(cardText ? { cardText } : {}),
     })
 
-    console.log(
-      `[${this.name}] Directory profile synced${cardText ? ' (card text registered)' : ''}`,
-    )
+    if (!options.quiet) {
+      console.log(
+        `[${this.name}] Directory profile synced${cardText ? ' (card text registered)' : ''}`,
+      )
+    }
   }
 
-  async start(): Promise<void> {
+  async start(options: AgentBridgeStartOptions = {}): Promise<void> {
+    let quietStartup = options.quiet === true
     this.identity = await this.resolveIdentity()
-    console.log(`[${this.name}] AAMP identity: ${this.identity.email}`)
-    console.log(`[${this.name}] CLI profile: ${this.profileLabel}`)
+    this.senderPolicies = loadSenderPolicies(resolveSenderPoliciesFile(
+      this.agentConfig.senderPoliciesFile,
+      this.agentConfig.name,
+    ))
+    if (!quietStartup) {
+      console.log(`[${this.name}] AAMP identity: ${this.identity.email}`)
+      console.log(`[${this.name}] CLI profile: ${this.profileLabel}`)
+    }
 
     this.client = AampClient.fromMailboxIdentity({
       email: this.identity.email,
@@ -128,7 +270,8 @@ export class AgentBridge {
     const client = this.client
 
     client.on('task.dispatch', (task: TaskDispatch) => {
-      return this.handleTask(task).catch((err) => {
+      const historical = this.isHistoricalReconcile
+      return this.handleTask(task, { historical }).catch((err) => {
         console.error(`[${this.name}] Task ${task.taskId} failed: ${(err as Error).message}`)
       })
     })
@@ -138,29 +281,61 @@ export class AgentBridge {
       console.warn(`[${this.name}] <- task.cancel  ${task.taskId}  from=${task.from}`)
     })
 
+    ;(client as unknown as {
+      on(event: 'pair.request', handler: (request: PairRequest) => void): void
+    }).on('pair.request', (request) => {
+      const historical = this.isHistoricalReconcile
+      void this.handlePairRequest(request, { historical }).catch((err) => {
+        console.warn(`[${this.name}] Failed to handle pair.request: ${(err as Error).message}`)
+      })
+    })
+
     client.on('connected', () => {
       this.pollingFallback = client.isUsingPollingFallback()
-      console.log(`[${this.name}] AAMP connected${this.pollingFallback ? ' (polling fallback)' : ''}`)
+      if (!quietStartup) {
+        console.log(`[${this.name}] AAMP connected${this.pollingFallback ? ' (polling fallback)' : ''}`)
+      }
     })
 
     client.on('disconnected', (reason: string) => {
       this.pollingFallback = client.isUsingPollingFallback()
-      console.warn(`[${this.name}] AAMP disconnected: ${reason}`)
+      if (!quietStartup) {
+        console.warn(`[${this.name}] AAMP disconnected: ${reason}`)
+      }
     })
 
     client.on('error', (err: Error) => {
       if (err.message.includes('falling back to polling')) {
         this.pollingFallback = true
-        console.warn(`[${this.name}] ${err.message}`)
+        if (!quietStartup) {
+          console.warn(`[${this.name}] ${err.message}`)
+        }
         return
       }
       console.error(`[${this.name}] AAMP error: ${err.message}`)
     })
 
     await client.connect()
-    await this.syncDirectoryProfile().catch((err) => {
-      console.warn(`[${this.name}] Directory profile sync failed: ${(err as Error).message}`)
+    this.isHistoricalReconcile = true
+    const reconciled = await client.reconcileRecentEmails(50, { includeHistorical: true })
+      .catch((err) => {
+        if (!quietStartup) {
+          console.warn(`[${this.name}] Recent email reconcile failed: ${(err as Error).message}`)
+        }
+        return 0
+      })
+      .finally(() => {
+        this.isHistoricalReconcile = false
+      })
+    if (!quietStartup) {
+      console.log(`[${this.name}] Reconciled ${reconciled} recent email(s)`)
+    }
+    await this.syncDirectoryProfile({ quiet: quietStartup }).catch((err) => {
+      if (!quietStartup) {
+        console.warn(`[${this.name}] Directory profile sync failed: ${(err as Error).message}`)
+      }
     })
+    quietStartup = false
   }
 
   stop(): void {
@@ -168,10 +343,13 @@ export class AgentBridge {
     this.client = null
   }
 
-  private async handleTask(task: TaskDispatch): Promise<void> {
+  private async handleTask(task: TaskDispatch, options: HandleEventOptions = {}): Promise<void> {
     if (!this.client) return
 
-    console.log(`[${this.name}] <- task.dispatch  ${task.taskId}  "${task.title}"  from=${task.from}`)
+    const shouldLogTask = !options.historical
+    if (shouldLogTask) {
+      console.log(`[${this.name}] <- task.dispatch  ${task.taskId}  "${task.title}"  from=${task.from}`)
+    }
 
     if (task.expiresAt && new Date(task.expiresAt).getTime() <= Date.now()) {
       console.warn(`[${this.name}] Skipping expired task ${task.taskId}`)
@@ -183,8 +361,32 @@ export class AgentBridge {
       return
     }
 
-    const senderDecision = matchSenderPolicy(task, this.agentConfig.senderPolicies)
+    const hydratedTask = await this.client.hydrateTaskDispatch(task).catch((err) => {
+      if (!options.historical) {
+        console.warn(`[${this.name}] Failed to load thread history for ${task.taskId}: ${(err as Error).message}`)
+      }
+      if (options.historical) return null
+      return {
+        ...task,
+        threadHistory: [],
+        threadContextText: '',
+      }
+    })
+
+    if (!hydratedTask) {
+      return
+    }
+
+    if (threadAlreadyTerminal(hydratedTask.threadHistory)) {
+      if (shouldLogTask) {
+        console.log(`[${this.name}] Skipping task ${task.taskId} because the thread already reached a terminal state`)
+      }
+      return
+    }
+
+    const senderDecision = matchCombinedSenderPolicy(task, this.agentConfig.senderPolicies, this.senderPolicies)
     if (!senderDecision.allowed) {
+      if (options.historical) return
       console.warn(`[${this.name}] Rejecting task ${task.taskId}: ${senderDecision.reason ?? 'sender policy rejected the task'}`)
       await this.client.sendResult({
         to: task.from,
@@ -197,22 +399,9 @@ export class AgentBridge {
       return
     }
 
-    const hydratedTask = await this.client.hydrateTaskDispatch(task).catch((err) => {
-      console.warn(`[${this.name}] Failed to load thread history for ${task.taskId}: ${(err as Error).message}`)
-      return {
-        ...task,
-        threadHistory: [],
-        threadContextText: '',
-      }
-    })
-
-    if (threadAlreadyTerminal(hydratedTask.threadHistory)) {
-      console.log(`[${this.name}] Skipping historical task ${task.taskId} because the thread already reached a terminal state`)
-      return
-    }
-
     this.activeTaskCount += 1
     let activeStream: Awaited<ReturnType<AampClient['createStream']>> | null = null
+    let streamOpenedAt: Date | null = null
     const pendingStreamWrites = new Set<Promise<void>>()
 
     const queueStreamAppend = (
@@ -221,6 +410,10 @@ export class AgentBridge {
     ) => {
       if (!this.client || !activeStream) return
       const streamId = activeStream.streamId
+      console.log(
+        `[${this.name}] ~~ stream.event  ${task.taskId}  stream=${streamId}  type=${type}  at=${formatLogTime()}  elapsed=${formatElapsed(streamOpenedAt)}`,
+      )
+      console.log(stringifyStreamPayload(payload))
       let write: Promise<void>
       write = this.client.appendStreamEvent({
         streamId,
@@ -299,6 +492,20 @@ export class AgentBridge {
         return
       }
 
+      if (eventType === 'tool_partial_output') {
+        const record = data && typeof data === 'object' && !Array.isArray(data)
+          ? data as Record<string, unknown>
+          : {}
+        const chunk = typeof record.chunk === 'string' ? record.chunk : undefined
+        queueStreamAppend('progress', {
+          label: 'Tool output',
+          status: 'in_progress',
+          ...record,
+          ...(chunk ? { chunk } : {}),
+        })
+        return
+      }
+
       if (eventType === 'usage') {
         queueStreamAppend('progress', {
           label: 'Token usage updated',
@@ -327,24 +534,25 @@ export class AgentBridge {
             taskId: task.taskId,
             peerEmail: task.from,
           })
+          streamOpenedAt = new Date()
+          console.log(
+            `[${this.name}] ~~ stream.open  ${task.taskId}  stream=${activeStream.streamId}  at=${formatLogTime(streamOpenedAt)}`,
+          )
           await this.client.sendStreamOpened({
             to: task.from,
             taskId: task.taskId,
             streamId: activeStream.streamId,
             inReplyTo: task.messageId,
           })
-          await this.client.appendStreamEvent({
-            streamId: activeStream.streamId,
-            type: 'status',
-            payload: { state: 'running', label: 'CLI task started' },
-          })
+          queueStreamAppend('status', { state: 'running', label: 'CLI task started' })
         } catch (err) {
           activeStream = null
+          streamOpenedAt = null
           console.warn(`[${this.name}] AAMP stream unavailable for ${task.taskId}: ${(err as Error).message}`)
         }
       }
 
-      const prompt = buildPrompt(hydratedTask, hydratedTask.threadContextText)
+      const prompt = buildPrompt(hydratedTask, hydratedTask.threadContextText, this.name)
       const result = await this.cli.prompt(hydratedTask.sessionKey, prompt, {
         onStreamUpdate: handleStreamUpdate,
       })
@@ -355,8 +563,18 @@ export class AgentBridge {
       await flushStreamWrites()
 
       const parsed = parseResponse(result.output)
+      if (!parsed.isHelp
+        && !parsed.output
+        && parsed.files.length === 0
+        && !parsed.structuredResult?.length
+        && !parsed.attachments?.length) {
+        throw new Error('CLI agent completed without a final response')
+      }
       if (parsed.isHelp) {
         if (activeStream) {
+          console.log(
+            `[${this.name}] ~~ stream.close ${task.taskId}  stream=${activeStream.streamId}  reason=task.help_needed  at=${formatLogTime()}  elapsed=${formatElapsed(streamOpenedAt)}`,
+          )
           await this.client.closeStream({
             streamId: activeStream.streamId,
             payload: { reason: 'task.help_needed' },
@@ -375,12 +593,16 @@ export class AgentBridge {
       }
 
       const attachments: AampAttachment[] = []
-      for (const filepath of parsed.files) {
-        if (!existsSync(filepath)) continue
+      for (const attachmentRef of mergeAttachmentRefs(parsed.files, parsed.attachments)) {
+        const filepath = attachmentRef.path
+        if (!existsSync(filepath)) {
+          console.warn(`[${this.name}] Attachment file not found: ${filepath}`)
+          continue
+        }
         try {
           attachments.push({
-            filename: basename(filepath),
-            contentType: 'application/octet-stream',
+            filename: sanitizeAttachmentFilename(attachmentRef.filename, filepath),
+            contentType: sanitizeContentType(attachmentRef.contentType),
             content: readFileSync(filepath),
           })
           console.log(`[${this.name}] Attaching file: ${filepath}`)
@@ -388,34 +610,47 @@ export class AgentBridge {
           console.warn(`[${this.name}] Failed to read file ${filepath}: ${(err as Error).message}`)
         }
       }
+      const structuredResult = fillStructuredResultAttachmentFilenames(
+        parsed.structuredResult,
+        attachments,
+      )
 
       if (activeStream) {
+        console.log(
+          `[${this.name}] ~~ stream.close ${task.taskId}  stream=${activeStream.streamId}  reason=task.result  at=${formatLogTime()}  elapsed=${formatElapsed(streamOpenedAt)}`,
+        )
         await this.client.closeStream({
           streamId: activeStream.streamId,
           payload: { reason: 'task.result', status: 'completed' },
         })
       }
+      console.log(`[${this.name}] -> task.result.output ${task.taskId}\n${parsed.output}`)
       await this.client.sendResult({
         to: task.from,
         taskId: task.taskId,
         status: 'completed',
         output: parsed.output,
+        structuredResult,
         inReplyTo: task.messageId,
         attachments: attachments.length > 0 ? attachments : undefined,
       })
-      console.log(`[${this.name}] -> task.result  ${task.taskId}  completed${attachments.length ? ` (${attachments.length} attachment(s))` : ''}`)
+      console.log(`[${this.name}] -> task.result  ${task.taskId}  completed${structuredResult?.length ? ` (${structuredResult.length} structured field(s))` : ''}${attachments.length ? ` (${attachments.length} attachment(s))` : ''}`)
     } catch (err) {
       const errorMsg = (err as Error).message
       console.error(`[${this.name}] Task ${task.taskId} error: ${errorMsg}`)
       try {
         await flushStreamWrites()
         if (activeStream) {
+          console.log(
+            `[${this.name}] ~~ stream.close ${task.taskId}  stream=${activeStream.streamId}  reason=task.result  status=rejected  at=${formatLogTime()}  elapsed=${formatElapsed(streamOpenedAt)}`,
+          )
           await this.client.closeStream({
             streamId: activeStream.streamId,
             payload: { reason: 'task.result', status: 'rejected', error: errorMsg },
           })
         }
       } catch { /* best effort */ }
+      console.log(`[${this.name}] -> task.result.output ${task.taskId}\nCLI agent error: ${errorMsg}`)
       await this.client.sendResult({
         to: task.from,
         taskId: task.taskId,
@@ -426,6 +661,95 @@ export class AgentBridge {
       }).catch(() => {})
     } finally {
       this.activeTaskCount = Math.max(0, this.activeTaskCount - 1)
+    }
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase()
+  }
+
+  private async sendPairResponse(request: PairRequest, success: boolean, reason?: string): Promise<boolean> {
+    if (!this.client) return false
+    let lastError: unknown
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await this.client.sendPairRespond({
+          to: request.from,
+          taskId: request.taskId,
+          success,
+          reason,
+          inReplyTo: request.messageId,
+        })
+        return true
+      } catch (err) {
+        lastError = err
+        if (attempt < 3) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1_000))
+        }
+      }
+    }
+    console.warn(`[${this.name}] Failed to send pair.respond to ${request.from}: ${(lastError as Error)?.message ?? String(lastError)}`)
+    return false
+  }
+
+  private async handlePairRequest(request: PairRequest, options: HandleEventOptions = {}): Promise<void> {
+    if (!this.identity || !this.client) return
+    const shouldLogRequest = !options.historical
+    if (shouldLogRequest) {
+      console.log(`[${this.name}] <- pair.request  ${request.taskId}  from=${request.from}`)
+    }
+    const requestTo = this.normalizeEmail(request.to)
+    if (requestTo && requestTo !== this.normalizeEmail(this.identity.email)) {
+      console.warn(`[${this.name}] Ignoring pair.request ${request.taskId}: addressed to ${request.to}`)
+      return
+    }
+    const history = await this.client.getThreadHistory(request.taskId).catch((err) => {
+      if (isThreadNotFoundError(err) && options.historical) {
+        return null
+      }
+      if (!isThreadNotFoundError(err)) {
+        console.warn(`[${this.name}] Failed to load pair thread ${request.taskId}: ${(err as Error).message}`)
+      }
+      return { taskId: request.taskId, events: [] }
+    })
+    if (!history) return
+    const priorEvents = history.events.filter((event) => event.messageId !== request.messageId)
+    if (threadAlreadyPairResponded(priorEvents)) {
+      if (shouldLogRequest) {
+        console.log(`[${this.name}] Skipping pair.request ${request.taskId} because it already has pair.respond`)
+      }
+      return
+    }
+
+    const pairingFile = resolvePairingFile(this.agentConfig.pairingFile, this.agentConfig.name)
+    const senderPoliciesFile = resolveSenderPoliciesFile(this.agentConfig.senderPoliciesFile, this.agentConfig.name)
+    const pairParams = {
+      file: pairingFile,
+      mailbox: this.identity.email,
+      pairCode: request.pairCode,
+    }
+    const validPairing = validatePairingCode(pairParams)
+
+    if (!validPairing) {
+      const reason = 'invalid or expired pair code'
+      if (options.historical) {
+        return
+      }
+      console.warn(`[${this.name}] Rejected pair.request from ${request.from}: ${reason}`)
+      await this.sendPairResponse(request, false, reason)
+      return
+    }
+
+    this.senderPolicies = addSenderPolicy(senderPoliciesFile, {
+      sender: this.normalizeEmail(request.from),
+      dispatchContextRules: request.dispatchContextRules ?? {},
+      pairedAt: new Date().toISOString(),
+    })
+    console.log(`[${this.name}] Paired sender ${request.from}; sender policy saved to ${senderPoliciesFile}`)
+    if (await this.sendPairResponse(request, true)) {
+      consumePairingCode(pairParams)
+    } else {
+      console.warn(`[${this.name}] Pairing code left active so ${request.from} can retry before it expires`)
     }
   }
 

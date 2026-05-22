@@ -1,6 +1,10 @@
 import type { BridgeConfig } from './config.js'
 import { AgentBridge } from './agent-bridge.js'
 
+export interface BridgeStartOptions {
+  quiet?: boolean
+}
+
 /**
  * Manages multiple ACP agent bridges, each with its own AAMP identity.
  */
@@ -15,15 +19,17 @@ export class AampAcpBridge {
   /**
    * Start all configured agents.
    */
-  async start(): Promise<void> {
-    console.log(`\nAAMP ACP Bridge`)
-    console.log(`   Host: ${this.config.aampHost}`)
-    console.log(`   Agents: ${this.config.agents.length}\n`)
+  async start(options: BridgeStartOptions = {}): Promise<void> {
+    if (!options.quiet) {
+      console.log(`\nAAMP ACP Bridge`)
+      console.log(`   Host: ${this.config.aampHost}`)
+      console.log(`   Agents: ${this.config.agents.length}\n`)
+    }
 
     for (const agentConfig of this.config.agents) {
       const bridge = new AgentBridge(agentConfig, this.config.aampHost, this.config.rejectUnauthorized)
       try {
-        await bridge.start()
+        await bridge.start({ quiet: options.quiet })
         this.agents.set(agentConfig.name, bridge)
       } catch (err) {
         console.error(`[${agentConfig.name}] Failed to start: ${(err as Error).message}`)
@@ -34,11 +40,13 @@ export class AampAcpBridge {
       throw new Error('No agents started successfully')
     }
 
-    console.log(`\nBridge running with ${this.agents.size} agent(s):`)
+    console.log(`${options.quiet ? '' : '\n'}Bridge running with ${this.agents.size} agent(s):`)
     for (const [name, bridge] of this.agents) {
       console.log(`   ${name}: ${bridge.email}`)
     }
-    console.log(`\nPress Ctrl+C to stop.\n`)
+    if (!options.quiet) {
+      console.log(`\nPress Ctrl+C to stop.\n`)
+    }
   }
 
   /**

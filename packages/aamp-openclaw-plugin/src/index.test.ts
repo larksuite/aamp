@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { setImmediate as waitForNextTick } from 'node:timers/promises'
@@ -14,6 +14,7 @@ class FakeAampClient {
   sendResult = vi.fn().mockResolvedValue(undefined)
   sendHelp = vi.fn().mockResolvedValue(undefined)
   sendTask = vi.fn().mockResolvedValue({ taskId: 'subtask-1', messageId: 'msg-sub-1' })
+  sendPairRespond = vi.fn().mockResolvedValue(undefined)
   disconnect = vi.fn()
   hydrateTaskDispatch = vi.fn(async (task: any) => ({
     ...task,
@@ -86,6 +87,7 @@ describe('openclaw plugin runtime', () => {
           aamp: {
             aampHost: 'https://meshmail.ai',
             credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
           },
         },
       },
@@ -203,6 +205,185 @@ describe('openclaw plugin runtime', () => {
     }))
   })
 
+  it('generates an on-demand pairing QR code for tools and slash commands', async () => {
+    const home = process.env.HOME!
+    const credentialsFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.credentials.json')
+    const pairingFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.pairing.json')
+    mkdirSync(path.dirname(credentialsFile), { recursive: true })
+    writeFileSync(credentialsFile, JSON.stringify({
+      email: 'agent@meshmail.ai',
+      mailboxToken: 'mailbox-token',
+      smtpPassword: 'smtp-1',
+    }))
+
+    vi.doMock('aamp-sdk', () => ({
+      AampClient: FakeAampClient,
+    }))
+
+    const tools = new Map<string, { execute: (...args: any[]) => Promise<any> }>()
+    const commands = new Map<string, { handler: () => Promise<{ text: string }> }>()
+    let service: { start: () => Promise<void> } | null = null
+
+    const plugin = await import('./index.ts')
+    plugin.default.register({
+      config: {
+        channels: {
+          aamp: {
+            aampHost: 'https://meshmail.ai',
+            credentialsFile,
+            pairingFile,
+          },
+        },
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+      runtime: {
+        system: {
+          requestHeartbeatNow: vi.fn(),
+        },
+      },
+      registerChannel: vi.fn(),
+      registerService: (value: { start: () => Promise<void> }) => {
+        service = value
+      },
+      on: vi.fn(),
+      registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<any> }) => {
+        tools.set(tool.name, tool)
+      },
+      registerCommand: (command: { name: string; handler: () => Promise<{ text: string }> }) => {
+        commands.set(command.name, command)
+      },
+    })
+
+    await service!.start()
+
+    const pairingTool = tools.get('aamp_pairing_code')
+    await expect(pairingTool!.execute('tool-call', {})).resolves.toEqual({
+      content: [{
+        type: 'text',
+        text: expect.stringContaining('Pairing URL: aamp://connect?mailbox=agent%40meshmail.ai&pair_code='),
+      }],
+    })
+
+    const saved = JSON.parse(readFileSync(pairingFile, 'utf-8')) as { mailbox?: string; pairCode?: string; connectUrl?: string }
+    expect(saved.mailbox).toBe('agent@meshmail.ai')
+    expect(saved.pairCode).toBeTruthy()
+    expect(saved.connectUrl).toContain('aamp://connect?mailbox=agent%40meshmail.ai&pair_code=')
+
+    await expect(commands.get('aamp-pair')!.handler()).resolves.toEqual({
+      text: expect.stringContaining('Pairing URL: aamp://connect?mailbox=agent%40meshmail.ai&pair_code='),
+    })
+  })
+
+  it('consumes pair.request codes and responds with the consume result', async () => {
+    const home = process.env.HOME!
+    const credentialsFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.credentials.json')
+    const pairingFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.pairing.json')
+    const senderPoliciesFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.sender-policies.json')
+    mkdirSync(path.dirname(credentialsFile), { recursive: true })
+    writeFileSync(credentialsFile, JSON.stringify({
+      email: 'agent@meshmail.ai',
+      mailboxToken: 'mailbox-token',
+      smtpPassword: 'smtp-1',
+    }))
+
+    vi.doMock('aamp-sdk', () => ({
+      AampClient: FakeAampClient,
+    }))
+
+    let service: { start: () => Promise<void> } | null = null
+    const plugin = await import('./index.ts')
+    plugin.default.register({
+      config: {
+        channels: {
+          aamp: {
+            aampHost: 'https://meshmail.ai',
+            credentialsFile,
+            pairingFile,
+            senderPoliciesFile,
+          },
+        },
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+      runtime: {
+        system: {
+          requestHeartbeatNow: vi.fn(),
+        },
+      },
+      registerChannel: vi.fn(),
+      registerService: (value: { start: () => Promise<void> }) => {
+        service = value
+      },
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+    })
+
+    await service!.start()
+    const client = FakeAampClient.fromMailboxIdentity.mock.results[0].value as FakeAampClient
+    const pairing = JSON.parse(readFileSync(pairingFile, 'utf-8')) as { pairCode: string }
+
+    client.emit('pair.request', {
+      protocolVersion: '1.1',
+      intent: 'pair.request',
+      taskId: 'pair-1',
+      from: 'sender@meshmail.ai',
+      to: 'agent@meshmail.ai',
+      pairCode: pairing.pairCode,
+      dispatchContextRules: { source: ['user-ui'] },
+      messageId: '<pair-1>',
+      subject: '[AAMP Pair] Connection request',
+      bodyText: '',
+    })
+    await waitForNextTick()
+
+    expect(client.sendPairRespond).toHaveBeenCalledWith({
+      to: 'sender@meshmail.ai',
+      taskId: 'pair-1',
+      success: true,
+      reason: undefined,
+      inReplyTo: '<pair-1>',
+    })
+    const consumed = JSON.parse(readFileSync(pairingFile, 'utf-8')) as { pairCode: string; consumedAt?: string }
+    expect(consumed.pairCode).toBe('')
+    expect(consumed.consumedAt).toBeTruthy()
+    expect(JSON.parse(readFileSync(senderPoliciesFile, 'utf-8'))).toEqual([
+      expect.objectContaining({
+        sender: 'sender@meshmail.ai',
+        dispatchContextRules: { source: ['user-ui'] },
+      }),
+    ])
+
+    client.emit('pair.request', {
+      protocolVersion: '1.1',
+      intent: 'pair.request',
+      taskId: 'pair-2',
+      from: 'sender@meshmail.ai',
+      to: 'agent@meshmail.ai',
+      pairCode: pairing.pairCode,
+      dispatchContextRules: {},
+      messageId: '<pair-2>',
+      subject: '[AAMP Pair] Connection request',
+      bodyText: '',
+    })
+    await waitForNextTick()
+
+    expect(client.sendPairRespond).toHaveBeenLastCalledWith({
+      to: 'sender@meshmail.ai',
+      taskId: 'pair-2',
+      success: false,
+      reason: 'invalid or expired pair code',
+      inReplyTo: '<pair-2>',
+    })
+  })
+
   it('injects the task targeted by the session key instead of the oldest queued task', async () => {
     vi.doMock('aamp-sdk', () => ({
       AampClient: FakeAampClient,
@@ -292,6 +473,7 @@ describe('openclaw plugin runtime', () => {
           aamp: {
             aampHost: 'https://meshmail.ai',
             credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
           },
         },
       },
@@ -374,6 +556,7 @@ describe('openclaw plugin runtime', () => {
           aamp: {
             aampHost: 'https://meshmail.ai',
             credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
           },
         },
       },
@@ -481,6 +664,7 @@ describe('openclaw plugin runtime', () => {
           aamp: {
             aampHost: 'https://meshmail.ai',
             credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
           },
         },
       },
@@ -593,6 +777,7 @@ describe('openclaw plugin runtime', () => {
           aamp: {
             aampHost: 'https://meshmail.ai',
             credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
           },
         },
       },
@@ -684,6 +869,7 @@ describe('openclaw plugin runtime', () => {
           aamp: {
             aampHost: 'https://meshmail.ai',
             credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
           },
         },
       },
@@ -754,6 +940,7 @@ describe('openclaw plugin runtime', () => {
           aamp: {
             aampHost: 'https://meshmail.ai',
             credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
           },
         },
       },

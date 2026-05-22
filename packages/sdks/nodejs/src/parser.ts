@@ -17,6 +17,8 @@ import {
   type TaskHelp,
   type TaskAck,
   type TaskStreamOpened,
+  type PairRequest,
+  type PairRespond,
   type CardQuery,
   type CardResponse,
 } from './types.js'
@@ -205,6 +207,25 @@ function encodeStructuredResult(value?: TaskResult['structuredResult']): string 
     .replace(/=+$/g, '')
 }
 
+function decodeBase64UrlJson<T>(value?: string): T | undefined {
+  if (!value) return undefined
+  try {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+    const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4))
+    return JSON.parse(Buffer.from(normalized + padding, 'base64').toString('utf-8')) as T
+  } catch {
+    return undefined
+  }
+}
+
+function encodeBase64UrlJson(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), 'utf-8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '')
+}
+
 export interface EmailMetadata {
   from: string
   to: string
@@ -352,6 +373,47 @@ export function parseAampHeaders(meta: EmailMetadata): AampMessage | null {
     return streamOpened
   }
 
+  if (intent === 'pair.request') {
+    const pairCode = getAampHeader(headers, AAMP_HEADER.PAIR_CODE) ?? ''
+    if (!pairCode) return null
+
+    const pairRequest: PairRequest = {
+      protocolVersion,
+      intent: 'pair.request',
+      taskId,
+      pairCode,
+      dispatchContextRules: decodeBase64UrlJson<Record<string, string[]>>(
+        getAampHeader(headers, AAMP_HEADER.DISPATCH_CONTEXT_RULES),
+      ) ?? {},
+      from,
+      to,
+      messageId: meta.messageId,
+      subject: meta.subject,
+      bodyText: '',
+    }
+    return pairRequest
+  }
+
+  if (intent === 'pair.respond') {
+    const rawStatus = getAampHeader(headers, AAMP_HEADER.STATUS)
+    const status: PairRespond['status'] = rawStatus === 'completed' ? 'completed' : 'rejected'
+    const reason = getAampHeader(headers, AAMP_HEADER.ERROR_MSG) || undefined
+    const pairRespond: PairRespond = {
+      protocolVersion,
+      intent: 'pair.respond',
+      taskId,
+      status,
+      success: status === 'completed',
+      reason,
+      from,
+      to,
+      messageId: meta.messageId,
+      subject: meta.subject,
+      bodyText: normalizeBodyText(meta.bodyText),
+    }
+    return pairRespond
+  }
+
   if (intent === 'card.query') {
     const cardQuery: CardQuery = {
       protocolVersion,
@@ -447,6 +509,37 @@ export function buildStreamOpenedHeaders(opts: {
     [AAMP_HEADER.TASK_ID]: opts.taskId,
     [AAMP_HEADER.STREAM_ID]: opts.streamId,
   }
+}
+
+export function buildPairRequestHeaders(opts: {
+  taskId: string
+  pairCode: string
+  dispatchContextRules?: Record<string, string[]>
+}): Record<string, string> {
+  return {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
+    [AAMP_HEADER.INTENT]: 'pair.request',
+    [AAMP_HEADER.TASK_ID]: opts.taskId,
+    [AAMP_HEADER.PAIR_CODE]: opts.pairCode,
+    [AAMP_HEADER.DISPATCH_CONTEXT_RULES]: encodeBase64UrlJson(opts.dispatchContextRules ?? {}),
+  }
+}
+
+export function buildPairRespondHeaders(opts: {
+  taskId: string
+  success: boolean
+  reason?: string
+}): Record<string, string> {
+  const headers: Record<string, string> = {
+    [AAMP_HEADER.VERSION]: AAMP_PROTOCOL_VERSION,
+    [AAMP_HEADER.INTENT]: 'pair.respond',
+    [AAMP_HEADER.TASK_ID]: opts.taskId,
+    [AAMP_HEADER.STATUS]: opts.success ? 'completed' : 'rejected',
+  }
+  if (!opts.success && opts.reason?.trim()) {
+    headers[AAMP_HEADER.ERROR_MSG] = opts.reason.replace(/[\r\n]/g, ' ').trim()
+  }
+  return headers
 }
 
 /**

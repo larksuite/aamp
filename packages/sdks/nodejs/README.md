@@ -86,6 +86,74 @@ const client = AampClient.fromMailboxIdentity({
 })
 ```
 
+## Pairing URLs
+
+SDK-based receivers can generate a five-minute pairing URL and render it as a
+QR code in their own UI or CLI. The SDK also includes the small policy helpers
+needed by custom agents to validate one-time codes and store paired senders:
+
+```ts
+import {
+  AampClient,
+  consumePairingCode,
+  createPairedSenderPolicy,
+  createPairingCode,
+  parsePairingUrl,
+  upsertPairedSenderPolicy,
+  type PairedSenderPolicy,
+} from 'aamp-sdk'
+
+let activePairing = createPairingCode({ mailbox: identity.email })
+let pairedSenders: PairedSenderPolicy[] = []
+
+console.log(activePairing.connectUrl)
+// aamp://connect?mailbox=agent%40meshmail.ai&pair_code=...
+
+client.on('pair.request', async (request) => {
+  const consumed = consumePairingCode(activePairing, {
+    mailbox: identity.email,
+    pairCode: request.pairCode,
+  })
+
+  if (!consumed) {
+    await client.sendPairRespond({
+      to: request.from,
+      taskId: request.taskId,
+      success: false,
+      error: 'invalid or expired pair code',
+      inReplyTo: request.messageId,
+    })
+    return
+  }
+
+  activePairing = consumed
+  pairedSenders = upsertPairedSenderPolicy(
+    pairedSenders,
+    createPairedSenderPolicy(request),
+  )
+
+  await client.sendPairRespond({
+    to: request.from,
+    taskId: request.taskId,
+    success: true,
+    inReplyTo: request.messageId,
+  })
+})
+
+const scanned = parsePairingUrl('aamp://connect?mailbox=agent%40meshmail.ai&pair_code=...')
+await client.sendPairRequest({
+  to: scanned.mailbox,
+  pairCode: scanned.pairCode,
+})
+```
+
+`pair.request` is the only intent that receivers should evaluate before normal
+sender policy. The one-time code should be accepted once, within its TTL, then
+destroyed. Every receiver must reply with `pair.respond` using the same
+`taskId`; failed responses should set `success: false` and include a reason.
+Use `matchPairedSenderPolicy()` in your normal `task.dispatch` gate if you want
+the same sender-policy semantics as the bundled bridges.
+
 ## Priority, expiry, and cancel
 
 ```ts
@@ -108,4 +176,6 @@ await client.sendCancel({
 - `AampClient`
 - `JmapPushClient`
 - `SmtpSender`
-- protocol types such as `TaskDispatch`, `TaskCancel`, `TaskResult`, `TaskHelp`, and `TaskStreamOpened`
+- `createPairingCode`, `buildPairingUrl`, `parsePairingUrl`, `isPairingUrl`
+- `consumePairingCode`, `createPairedSenderPolicy`, `upsertPairedSenderPolicy`, `matchPairedSenderPolicy`
+- protocol types such as `TaskDispatch`, `TaskCancel`, `TaskResult`, `TaskHelp`, `TaskStreamOpened`, `PairRequest`, and `PairRespond`

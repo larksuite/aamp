@@ -9,6 +9,7 @@ import {
   buildDispatchHeaders,
   buildResultHeaders,
   buildHelpHeaders,
+  buildPairRespondHeaders,
   normalizeHeaders,
 } from '../src/parser.js'
 
@@ -407,6 +408,29 @@ describe('round-trip: build headers then parse them', () => {
     expect(parsed.question).toBe('Which DB?')
     expect(parsed.blockedReason).toBe('Schema unclear')
     expect(parsed.suggestedOptions).toEqual(['PostgreSQL', 'MySQL'])
+  })
+
+  it('round-trips pair.respond failures', () => {
+    const built = buildPairRespondHeaders({
+      taskId: 'pair-rt-1',
+      success: false,
+      reason: 'invalid or expired pair code',
+    })
+
+    const parsed = parseAampHeaders({
+      from: 'agent@aamp.example.com',
+      to: 'app@aamp.example.com',
+      messageId: 'msg-pair-1',
+      subject: '[AAMP Pair] rejected',
+      headers: built as Record<string, string>,
+      bodyText: 'AAMP Pair Response',
+    })
+
+    if (parsed?.intent !== 'pair.respond') throw new Error('expected pair.respond')
+    expect(parsed.taskId).toBe('pair-rt-1')
+    expect(parsed.success).toBe(false)
+    expect(parsed.status).toBe('rejected')
+    expect(parsed.reason).toBe('invalid or expired pair code')
   })
 })
 

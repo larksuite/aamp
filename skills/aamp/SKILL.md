@@ -3,8 +3,9 @@ name: aamp
 description: >
   AAMP (Agent-to-Agent Mail Protocol) via aamp-cli. Use this skill when the
   agent needs to register a mailbox, listen for incoming AAMP mail, inspect a
-  task thread, dispatch a task, or reply with task.result / task.help_needed.
-  Prefer the CLI over hand-written HTTP requests.
+  task thread, complete a pairing URL, dispatch a task, or reply with
+  task.result / task.help_needed. Prefer the CLI over hand-written HTTP
+  requests.
 metadata:
   openclaw:
     requires:
@@ -40,11 +41,11 @@ Use `aamp-cli` as the default control plane for AAMP. Do not handcraft
 Prefer the first option that works:
 
 1. `aamp-cli ...`
-2. `node /absolute/path/to/packages/aamp-cli/dist/index.js ...`
-3. `npm --prefix /absolute/path/to/packages/aamp-cli run dev -- ...`
+2. `node /absolute/path/to/packages/cli/dist/index.js ...`
+3. `npm --prefix /absolute/path/to/packages/cli run dev -- ...`
 
 When working inside this monorepo, option 3 is the safest fallback because
-`packages/aamp-cli/dist` may not exist yet.
+`packages/cli/dist` may not exist yet.
 
 ## Core Rules
 
@@ -59,6 +60,10 @@ When working inside this monorepo, option 3 is the safest fallback because
    received event or thread history.
 5. Before dispatching to an unfamiliar agent, use directory search or
    `card-query` first.
+6. When another runtime gives you an `aamp://connect?...` URL, or gives you a
+   mailbox plus a `pair_code`, complete pairing with `aamp-cli pair --url`
+   before sending normal `task.dispatch` mail. If only a bare code is provided,
+   ask for the target mailbox because the code is not useful by itself.
 
 ## Mailbox Setup
 
@@ -85,6 +90,50 @@ Notes:
 - `register` saves the mailbox under `~/.aamp/cli/profiles/<profile>.json`.
 - `status` verifies SMTP and shows whether the client is on WebSocket or
   polling fallback.
+
+## Pair With Another AAMP Runtime
+
+When an Agent, bridge, plugin, or human gives you pairing material, consume it
+from your current mailbox profile. Recognize all of these as pairing requests:
+
+- Full URL: `aamp://connect?mailbox=agent@meshmail.ai&pair_code=abc123`
+- Split fields: `mailbox=agent@meshmail.ai` plus `pair_code=abc123`
+- Natural language: "pair with agent@meshmail.ai using code abc123"
+
+If you have split fields, construct the equivalent URL before calling the CLI:
+
+```bash
+aamp-cli pair \
+  --profile "${AAMP_PROFILE:-default}" \
+  --url "aamp://connect?mailbox=agent@meshmail.ai&pair_code=abc123"
+```
+
+For a bare code without a mailbox, stop and ask for the mailbox. Do not guess.
+
+For platform bridges, pass dispatch-context rules that the receiver should
+enforce for this sender:
+
+```bash
+aamp-cli pair \
+  --profile "${AAMP_PROFILE:-default}" \
+  --url "aamp://connect?mailbox=agent@meshmail.ai&pair_code=abc123" \
+  --dispatch-context-rule "source=feishu" \
+  --dispatch-context-rule "project_key=proj_123,proj_456"
+```
+
+Pairing sends a `pair.request` email. The receiver validates the one-time
+`pair_code`, stores this profile's mailbox as an allowed sender, and destroys
+the code. The receiver must then send `pair.respond` with the same task ID:
+`completed` for success, or `rejected` plus `X-AAMP-ErrorMsg` for a failure
+reason. Pairing URLs expire after five minutes unless the producer documents a
+different TTL.
+
+After `aamp-cli pair` prints the generated `taskId`, use `listen`, `inbox`, or
+`thread --task-id <taskId>` if the user needs confirmation from `pair.respond`.
+
+When running inside OpenClaw with `aamp-openclaw-plugin`, the agent can also
+produce its own QR code for the AAMP App or another runtime by calling the
+`aamp_pairing_code` tool, or the user can run `/aamp-pair`.
 
 ## Receive Mail
 
@@ -121,7 +170,7 @@ aamp-cli dispatch \
   --to "target@meshmail.ai" \
   --title "Review PR #42" \
   --body "Please review the linked patch and summarize risks." \
-  --priority high \
+  --priority high
 ```
 
 Reply with a successful result:

@@ -18,14 +18,23 @@ describe('openclaw plugin installer helpers', () => {
   })
 
   it('creates mailbox credentials through discovered endpoints', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ api: { url: '/api/aamp' } })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ registrationCode: 'reg-1' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        email: 'agent@meshmail.ai',
-        jmap: { token: 'mailbox-token' },
-        smtp: { password: 'smtp-1' },
-      })))
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input)
+      if (url.endsWith('/.well-known/aamp')) {
+        return new Response(JSON.stringify({ api: { url: '/api/aamp' } }))
+      }
+      if (url.includes('aamp.mailbox.register')) {
+        return new Response(JSON.stringify({ registrationCode: 'reg-1' }))
+      }
+      if (url.includes('aamp.mailbox.credentials')) {
+        return new Response(JSON.stringify({
+          email: 'agent@meshmail.ai',
+          mailbox: { token: 'mailbox-token' },
+          smtp: { password: 'smtp-1' },
+        }))
+      }
+      return new Response(JSON.stringify({ error: `unexpected url: ${url}` }), { status: 404 })
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     const { ensureMailboxIdentity } = await import('../bin/aamp-openclaw-plugin.mjs')
@@ -66,8 +75,43 @@ describe('openclaw plugin installer helpers', () => {
     })
     expect(next.tools.allow).toContain('aamp_send_result')
     expect(next.tools.allow).toContain('aamp_directory_search')
+    expect(next.tools.allow).toContain('aamp_pairing_code')
     expect(next.tools.allow).toContain('aamp_cancel_task')
     expect(next.tools.allow).toContain('aamp_dispatch_task')
+  })
+
+  it('parses and compares OpenClaw host versions', async () => {
+    const {
+      MIN_OPENCLAW_VERSION,
+      checkOpenClawVersion,
+      compareOpenClawVersions,
+      parseOpenClawVersion,
+    } = await import('../bin/aamp-openclaw-plugin.mjs')
+
+    expect(MIN_OPENCLAW_VERSION).toBe('2026.3.22')
+    expect(parseOpenClawVersion('OpenClaw 2026.4.27 (cbc2ba0)')).toBe('2026.4.27')
+    expect(parseOpenClawVersion('openclaw 2026.3.22-beta.1')).toBe('2026.3.22-beta.1')
+    expect(compareOpenClawVersions('2026.4.1', '2026.3.22')).toBeGreaterThan(0)
+    expect(compareOpenClawVersions('2026.3.22', '2026.3.22')).toBe(0)
+    expect(compareOpenClawVersions('2026.3.22-beta.1', '2026.3.22')).toBeLessThan(0)
+    expect(checkOpenClawVersion('2026.3.21')).toMatchObject({
+      ok: false,
+      currentVersion: '2026.3.21',
+      minimumVersion: '2026.3.22',
+      range: '>=2026.3.22',
+    })
+    expect(checkOpenClawVersion('2026.3.22').ok).toBe(true)
+  })
+
+  it('rejects installs on unsupported OpenClaw host versions before setup work starts', async () => {
+    const { assertOpenClawVersionSupported } = await import('../bin/aamp-openclaw-plugin.mjs')
+
+    expect(() => assertOpenClawVersionSupported('2026.3.21')).toThrow(/requires OpenClaw >=2026\.3\.22/)
+    expect(assertOpenClawVersionSupported('2026.3.22')).toMatchObject({
+      ok: true,
+      currentVersion: '2026.3.22',
+      minimumVersion: '2026.3.22',
+    })
   })
 
   it('treats symlinked bin execution as CLI entrypoint', async () => {

@@ -7,7 +7,7 @@
     "skills"
   ],
   "license": "MIT",
-  "version": "0.1.38",
+  "version": "0.1.42",
   "description": "AAMP Agent Mail Protocol — OpenClaw plugin. Gives OpenClaw an AAMP mailbox identity and lets it receive, process and reply to AAMP tasks.",
   "type": "module",
   "main": "dist/index.js",
@@ -19,12 +19,16 @@
     "extensions": [
       "./dist/index.js"
     ],
+    "install": {
+      "minHostVersion": ">=2026.3.22"
+    },
     "contracts": {
       "tools": [
         "aamp_directory_search",
         "aamp_send_result",
         "aamp_send_help",
         "aamp_pending_tasks",
+        "aamp_pairing_code",
         "aamp_cancel_task",
         "aamp_dispatch_task",
         "aamp_check_protocol",
@@ -69,6 +73,16 @@
               "type": "string",
               "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
               "description": "Path to persist AAMP credentials between restarts"
+            },
+            "pairingFile": {
+              "type": "string",
+              "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json",
+              "description": "Path to persist the current one-time AAMP pairing code"
+            },
+            "senderPoliciesFile": {
+              "type": "string",
+              "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json",
+              "description": "Path to persist senders approved by pair.request"
             },
             "senderPolicies": {
               "type": "array",
@@ -132,6 +146,16 @@
             "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
             "promptOnInstall": false
           },
+          "pairingFile": {
+            "label": "Pairing File",
+            "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json",
+            "promptOnInstall": false
+          },
+          "senderPoliciesFile": {
+            "label": "Paired Senders File",
+            "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json",
+            "promptOnInstall": false
+          },
           "senderPolicies": {
             "label": "Sender Policies",
             "placeholder": "[{\"sender\":\"meegle-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]",
@@ -174,6 +198,16 @@
           "type": "string",
           "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
           "description": "Path to persist AAMP credentials between restarts"
+        },
+        "pairingFile": {
+          "type": "string",
+          "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json",
+          "description": "Path to persist the current one-time AAMP pairing code"
+        },
+        "senderPoliciesFile": {
+          "type": "string",
+          "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json",
+          "description": "Path to persist senders approved by pair.request"
         },
         "senderPolicies": {
           "type": "array",
@@ -237,6 +271,16 @@
         "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
         "promptOnInstall": false
       },
+      "pairingFile": {
+        "label": "Pairing File",
+        "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json",
+        "promptOnInstall": false
+      },
+      "senderPoliciesFile": {
+        "label": "Paired Senders File",
+        "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json",
+        "promptOnInstall": false
+      },
       "senderPolicies": {
         "label": "Sender Policies",
         "placeholder": "[{\"sender\":\"meegle-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]",
@@ -252,12 +296,14 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "aamp-sdk": "file:../sdks/nodejs",
     "nodemailer": "^6.9.10",
-    "ws": "^8.16.0",
-    "aamp-sdk": "file:../sdks/nodejs"
+    "qrcode-terminal": "^0.12.0",
+    "ws": "^8.16.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "@types/qrcode-terminal": "^0.12.2",
     "esbuild": "^0.20.2",
     "typescript": "^5.4.3",
     "vitest": "^1.6.1"

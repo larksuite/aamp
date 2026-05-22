@@ -20,6 +20,8 @@ import type {
   TaskCancel,
   TaskDispatch,
   TaskHelp,
+  PairRequest,
+  PairRespond,
   TaskResult,
   TaskStreamOpened,
 } from './types.js'
@@ -134,6 +136,8 @@ type JmapPushEvents = {
   'task.help_needed': (help: TaskHelp) => void
   'task.ack': (ack: TaskAck) => void
   'task.stream.opened': (stream: TaskStreamOpened) => void
+  'pair.request': (request: PairRequest) => void
+  'pair.respond': (response: PairRespond) => void
   'card.query': (query: CardQuery) => void
   'card.response': (response: CardResponse) => void
   reply: (reply: HumanReply) => void
@@ -446,6 +450,12 @@ export class JmapPushClient extends TinyEmitter<JmapPushEvents> {
           break
         case 'task.stream.opened':
           this.emit('task.stream.opened', aampMsg)
+          break
+        case 'pair.request':
+          this.emit('pair.request', aampMsg)
+          break
+        case 'pair.respond':
+          this.emit('pair.respond', aampMsg)
           break
         case 'card.query':
           this.emit('card.query', aampMsg)

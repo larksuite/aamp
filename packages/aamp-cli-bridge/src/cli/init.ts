@@ -3,9 +3,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createInterface, emitKeypressEvents } from 'node:readline'
 import { AampClient } from 'aamp-sdk'
+import * as qrcode from 'qrcode-terminal'
 import type { AgentConfig, BridgeConfig, CliProfileDefinition, SenderPolicy } from '../config.js'
 import { BUILTIN_CLI_PROFILES, getBuiltinCliProfileNames, listUserCliProfiles } from '../cli-profiles.js'
 import { getDefaultCredentialsPath } from '../storage.js'
+import {
+  createPairingCode,
+  defaultPairingFile,
+  defaultSenderPoliciesFile,
+} from '../pairing.js'
 
 function ask(rl: ReturnType<typeof createInterface>, question: string): Promise<string> {
   if ((rl as unknown as { closed?: boolean }).closed) return Promise.resolve('')
@@ -31,6 +37,8 @@ interface SelectItem<T extends string> {
   description?: string
   selected?: boolean
 }
+
+type ConnectionSetupMethod = 'pairing-code' | 'manual-sender-policy' | 'reuse-sender-policy' | 'later'
 
 async function multiSelect<T extends string>(
   rl: ReturnType<typeof createInterface>,
@@ -117,6 +125,100 @@ async function multiSelect<T extends string>(
         case 'enter':
           cleanup()
           resolve(items.filter((item) => selected.has(item.value)).map((item) => item.value))
+          break
+        default:
+          break
+      }
+    }
+
+    rl.pause()
+    emitKeypressEvents(process.stdin)
+    process.stdin.setRawMode(true)
+    process.stdin.resume()
+    process.stdin.on('keypress', onKeypress)
+    render()
+  })
+}
+
+async function singleSelect<T extends string>(
+  rl: ReturnType<typeof createInterface>,
+  prompt: string,
+  items: Array<SelectItem<T>>,
+): Promise<T> {
+  if (items.length === 0) throw new Error('No options available')
+  const defaultIndex = Math.max(0, items.findIndex((item) => item.selected))
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    const input = await ask(
+      rl,
+      `${prompt} (${items.map((item, index) => `${index + 1}=${item.label}`).join(', ')}, default: ${defaultIndex + 1}): `,
+    )
+    const normalized = input.trim().toLowerCase()
+    if (!normalized) return items[defaultIndex].value
+
+    const numericIndex = Number(normalized)
+    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= items.length) {
+      return items[numericIndex - 1].value
+    }
+
+    return items.find((item) => (
+      item.value.toLowerCase() === normalized
+      || item.label.toLowerCase() === normalized
+    ))?.value ?? items[defaultIndex].value
+  }
+
+  return await new Promise<T>((resolve, reject) => {
+    let cursor = defaultIndex
+    let renderedLines = 0
+
+    const render = () => {
+      if (renderedLines > 0) {
+        process.stdout.write(`\x1B[${renderedLines}A\x1B[0J`)
+      }
+
+      const lines = [
+        `${prompt} (↑/↓ to move, Enter to confirm)`,
+        ...items.map((item, index) => {
+          const pointer = index === cursor ? '>' : ' '
+          const details = item.description ? ` ${item.description}` : ''
+          return `${pointer} ${item.label}${details}`
+        }),
+      ]
+      process.stdout.write(`${lines.join('\n')}\n`)
+      renderedLines = lines.length
+    }
+
+    const wasRawMode = process.stdin.isRaw
+
+    const cleanup = () => {
+      process.stdin.off('keypress', onKeypress)
+      process.stdin.setRawMode(wasRawMode)
+      rl.resume()
+      process.stdout.write('\n')
+    }
+
+    const onKeypress = (_str: string, key: { name?: string; ctrl?: boolean }) => {
+      if (key.ctrl && key.name === 'c') {
+        cleanup()
+        reject(new Error('Selection cancelled'))
+        return
+      }
+
+      switch (key.name) {
+        case 'up':
+        case 'k':
+          cursor = (cursor - 1 + items.length) % items.length
+          render()
+          break
+        case 'down':
+        case 'j':
+          cursor = (cursor + 1) % items.length
+          render()
+          break
+        case 'return':
+        case 'enter':
+          cleanup()
+          resolve(items[cursor].value)
           break
         default:
           break
@@ -225,47 +327,70 @@ function loadPreviousConfig(configPath: string): BridgeConfig | undefined {
   }
 }
 
-async function promptSenderPolicies(
+function formatPolicySenders(policies: SenderPolicy[]): string {
+  return policies.map((policy) => policy.sender).join(', ')
+}
+
+interface ReusableSenderPolicies {
+  label: string
+  policies: SenderPolicy[]
+}
+
+function getReusableSenderPolicies(
+  name: string,
+  previousPolicies: SenderPolicy[] | undefined,
+  allPreviousPolicies: Map<string, SenderPolicy[]>,
+): ReusableSenderPolicies[] {
+  const reusablePolicies: ReusableSenderPolicies[] = []
+  if (previousPolicies?.length) {
+    reusablePolicies.push({ label: `${name} (current)`, policies: previousPolicies })
+  }
+
+  reusablePolicies.push(...[...allPreviousPolicies.entries()]
+    .filter(([agentName, policies]) => agentName !== name && policies.length > 0)
+    .map(([agentName, policies]) => ({ label: agentName, policies })))
+
+  return reusablePolicies
+}
+
+async function promptReusableSenderPolicies(
   rl: ReturnType<typeof createInterface>,
   name: string,
   previousPolicies: SenderPolicy[] | undefined,
   allPreviousPolicies: Map<string, SenderPolicy[]>,
 ): Promise<SenderPolicy[] | undefined> {
-  if (previousPolicies?.length) {
-    const reuseAnswer = await ask(
-      rl,
-      `? Reuse existing sender policies for ${name}? (Y/n): `,
-    )
-    if (reuseAnswer.trim().toLowerCase() !== 'n') {
-      return previousPolicies
-    }
+  const reusablePolicies = getReusableSenderPolicies(name, previousPolicies, allPreviousPolicies)
+  if (reusablePolicies.length === 0) {
+    return undefined
   }
 
-  const reusablePolicies = [...allPreviousPolicies.entries()]
-    .filter(([agentName, policies]) => agentName !== name && policies.length > 0)
-  if (reusablePolicies.length > 0) {
-    console.log(`? Existing sender policies available:`)
-    reusablePolicies.forEach(([agentName, policies], index) => {
-      const senders = policies.map((policy) => policy.sender).join(', ')
-      console.log(`  ${index + 1}. ${agentName} (${senders})`)
-    })
-    const reuseOtherAnswer = await ask(
-      rl,
-      `? Reuse sender policies from another agent for ${name}? (number, empty for no): `,
-    )
-    const selectedIndex = Number(reuseOtherAnswer.trim())
-    if (Number.isInteger(selectedIndex) && selectedIndex >= 1 && selectedIndex <= reusablePolicies.length) {
-      return reusablePolicies[selectedIndex - 1][1]
-    }
+  if (reusablePolicies.length === 1) {
+    const [selected] = reusablePolicies
+    console.log(`  Reusing sender policies from ${selected.label} (${formatPolicySenders(selected.policies)})`)
+    return selected.policies
   }
 
-  const policyAnswer = await ask(rl, `? Restrict ${name} with sender policies? (y/N): `)
-  if (policyAnswer.trim().toLowerCase() !== 'y') return undefined
+  const selectedIndex = await singleSelect(
+    rl,
+    `? Reuse which sender policies for ${name}?`,
+    reusablePolicies.map(({ label, policies }, index) => ({
+      value: String(index),
+      label,
+      description: `(${formatPolicySenders(policies)})`,
+      selected: index === 0,
+    })),
+  )
+  return reusablePolicies[Number(selectedIndex)].policies
+}
 
+async function promptManualSenderPolicies(
+  rl: ReturnType<typeof createInterface>,
+  name: string,
+): Promise<SenderPolicy[] | undefined> {
   const sendersInput = await ask(rl, `? Allowed sender emails for ${name} (comma-separated): `)
   const senders = parseEmailList(sendersInput)
   if (senders.length === 0) {
-    console.log(`  Warning: no valid sender entries provided; ${name} will accept all senders.`)
+    console.log(`  Warning: no valid sender entries provided; ${name} will reject all senders until paired or configured.`)
     return undefined
   }
 
@@ -283,6 +408,47 @@ async function promptSenderPolicies(
   }
 
   return senderPolicies
+}
+
+async function promptSenderPolicies(
+  rl: ReturnType<typeof createInterface>,
+  name: string,
+  method: Extract<ConnectionSetupMethod, 'manual-sender-policy' | 'reuse-sender-policy'>,
+  previousPolicies: SenderPolicy[] | undefined,
+  allPreviousPolicies: Map<string, SenderPolicy[]>,
+): Promise<SenderPolicy[] | undefined> {
+  if (method === 'reuse-sender-policy') {
+    return promptReusableSenderPolicies(rl, name, previousPolicies, allPreviousPolicies)
+  }
+
+  return promptManualSenderPolicies(rl, name)
+}
+
+async function promptConnectionSetupMethod(
+  rl: ReturnType<typeof createInterface>,
+  name: string,
+  canReuseSenderPolicy: boolean,
+): Promise<ConnectionSetupMethod> {
+  return singleSelect(rl, `? How should ${name} authorize senders?`, [
+    {
+      value: 'pairing-code',
+      label: 'Pair with QR code',
+      description: '(recommended)',
+      selected: true,
+    },
+    {
+      value: 'manual-sender-policy',
+      label: 'Manually enter sender policy',
+    },
+    ...(canReuseSenderPolicy ? [{
+      value: 'reuse-sender-policy' as const,
+      label: 'Reuse existing sender policy',
+    }] : []),
+    {
+      value: 'later',
+      label: 'Configure later',
+    },
+  ])
 }
 
 function renderCommandForDetection(command: string, profileName: string): string | null {
@@ -320,6 +486,26 @@ function profileLabel(profileRef: AgentConfig['cliProfile']): string {
   return profileRef.name ?? 'inline'
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`
+  }
+
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(',')}}`
+  }
+
+  return JSON.stringify(value)
+}
+
+function profilesEquivalent(left: CliProfileDefinition | undefined, right: CliProfileDefinition | undefined): boolean {
+  if (!left || !right) return false
+  return stableStringify(left) === stableStringify(right)
+}
+
 function resolveProfileForExistingAgent(
   agent: AgentConfig,
   customProfiles: BridgeConfig['profiles'] | undefined,
@@ -352,6 +538,11 @@ function collectProfileCandidates(previousConfig?: BridgeConfig): ProfileCandida
   }
 
   for (const { name, profile } of listUserCliProfiles()) {
+    const existing = profiles.get(name)
+    if (existing?.source === 'built-in' && profilesEquivalent(existing.profile, profile)) {
+      continue
+    }
+
     profiles.set(name, {
       name,
       cliProfile: name,
@@ -422,7 +613,41 @@ function clearScanProgress(): void {
   process.stdout.write('\x1B[2K\r')
 }
 
-export async function runInit(configPath: string): Promise<void> {
+function renderQrFallback(value: string): void {
+  console.log(`  Pairing URL: ${value}`)
+}
+
+function renderTerminalQr(value: string): void {
+  const qrModule = ((qrcode as unknown as {
+    generate?: (input: string, opts: { small: boolean }, cb: (qr: string) => void) => void
+    default?: { generate?: (input: string, opts: { small: boolean }, cb: (qr: string) => void) => void }
+  }).generate ? qrcode : (qrcode as unknown as {
+    default?: { generate?: (input: string, opts: { small: boolean }, cb: (qr: string) => void) => void }
+  }).default) as
+    | { generate?: (input: string, opts: { small: boolean }, cb: (qr: string) => void) => void }
+    | undefined
+
+  if (!qrModule?.generate) {
+    renderQrFallback(value)
+    return
+  }
+
+  try {
+    console.log('  Scan this QR code with AAMP App:')
+    qrModule.generate(value, { small: true }, (qr) => console.log(qr))
+  } catch {
+    renderQrFallback(value)
+  }
+}
+
+export function renderPairingCode(name: string, mailbox: string, pairingFile: string): void {
+  const pairing = createPairingCode({ mailbox, file: pairingFile })
+  console.log(`\n  Pair ${name} with AAMP App (expires ${pairing.expiresAt})`)
+  renderTerminalQr(pairing.connectUrl)
+  console.log(`  Pairing URL: ${pairing.connectUrl}`)
+}
+
+export async function runInit(configPath: string): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   const previousConfig = loadPreviousConfig(configPath)
   const previousAgents = new Map((previousConfig?.agents ?? []).map((agent) => [agent.name, agent]))
@@ -478,12 +703,20 @@ export async function runInit(configPath: string): Promise<void> {
     const previousAgent = previousAgents.get(name)
 
     const credFile = previousAgent?.credentialsFile ?? getDefaultCredentialsPath(name)
-    const senderPolicies = await promptSenderPolicies(
-      rl,
-      name,
-      previousSenderPolicies.get(name),
-      previousSenderPolicies,
-    )
+    const pairingFile = previousAgent?.pairingFile ?? defaultPairingFile(name)
+    const senderPoliciesFile = previousAgent?.senderPoliciesFile ?? defaultSenderPoliciesFile(name)
+    const previousPolicies = previousSenderPolicies.get(name)
+    const canReuseSenderPolicy = getReusableSenderPolicies(name, previousPolicies, previousSenderPolicies).length > 0
+    const connectionSetup = await promptConnectionSetupMethod(rl, name, canReuseSenderPolicy)
+    const senderPolicies = connectionSetup === 'manual-sender-policy' || connectionSetup === 'reuse-sender-policy'
+      ? await promptSenderPolicies(
+          rl,
+          name,
+          connectionSetup,
+          previousPolicies,
+          previousSenderPolicies,
+        )
+      : undefined
 
     const baseAgent: AgentConfig = {
       ...(previousAgent ?? {
@@ -496,11 +729,19 @@ export async function runInit(configPath: string): Promise<void> {
       cliProfile: previousAgent?.cliProfile ?? candidate.cliProfile,
       slug: previousAgent?.slug ?? `${name}-cli-bridge`,
       credentialsFile: credFile,
+      pairingFile,
+      senderPoliciesFile,
       senderPolicies,
     }
     delete baseAgent.senderWhitelist
 
     if (existsSync(credFile)) {
+      const saved = JSON.parse(readFileSync(credFile, 'utf-8')) as { email?: string }
+      if (connectionSetup === 'pairing-code' && saved.email) {
+        renderPairingCode(name, saved.email, pairingFile)
+      } else if (connectionSetup === 'later') {
+        console.log(`  Sender authorization for ${name} was left for later; task.dispatch will be rejected until paired or configured.`)
+      }
       console.log(`  + ${name} -> using existing credentials (${credFile})`)
       agents.push(baseAgent)
       continue
@@ -520,6 +761,11 @@ export async function runInit(configPath: string): Promise<void> {
         smtpPassword: creds.smtpPassword,
       }, null, 2))
 
+      if (connectionSetup === 'pairing-code') {
+        renderPairingCode(name, creds.email, pairingFile)
+      } else if (connectionSetup === 'later') {
+        console.log(`  Sender authorization for ${name} was left for later; task.dispatch will be rejected until paired or configured.`)
+      }
       console.log(`  + ${name} -> ${creds.email}`)
       agents.push({
         ...baseAgent,
@@ -533,7 +779,7 @@ export async function runInit(configPath: string): Promise<void> {
   if (agents.length === 0) {
     console.log('No agents selected. Use profile-maker for custom CLI agents, then edit the config.')
     rl.close()
-    return
+    return false
   }
 
   const config: BridgeConfig = {
@@ -545,7 +791,7 @@ export async function runInit(configPath: string): Promise<void> {
   mkdirSync(dirname(configPath), { recursive: true })
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
   console.log(`\nConfig written to ${configPath}`)
-  console.log(`  Run: npx aamp-cli-bridge start\n`)
 
   rl.close()
+  return true
 }

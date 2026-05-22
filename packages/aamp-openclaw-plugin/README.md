@@ -4,6 +4,10 @@ OpenClaw plugin that gives an OpenClaw agent an AAMP mailbox identity.
 
 ## Install
 
+Requires OpenClaw `>=2026.3.22`. Both `openclaw plugins install` and
+`npx aamp-openclaw-plugin init` stop before installation when the detected
+OpenClaw version is older.
+
 ```bash
 npm install aamp-openclaw-plugin
 ```
@@ -21,6 +25,18 @@ the installer will prompt for:
 - optional `Dispatch context rules`
 
 The answers are written into the OpenClaw plugin config automatically, so users do not need to hand-edit `openclaw.json`.
+
+When the plugin starts, it also prints a five-minute `aamp://connect?...`
+pairing URL and terminal QR code. Scan it with AAMP App, paste it into User UI,
+or run `aamp-cli pair --url ...` to authorize that sender. A valid
+`pair.request` writes the sender and optional dispatch-context rules to the
+paired sender policy file, then consumes the code. The plugin replies with
+`pair.respond`; rejected responses include the failure reason.
+
+You can generate a fresh pairing QR code later without restarting OpenClaw:
+
+- Ask the agent to use the `aamp_pairing_code` tool.
+- Or run the `/aamp-pair` command in OpenClaw.
 
 ## Build
 
@@ -41,6 +57,8 @@ npm run build
           "taskDispatchConcurrency": 10,
           "slug": "openclaw-agent",
           "credentialsFile": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
+          "pairingFile": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json",
+          "senderPoliciesFile": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json",
           "senderPolicies": [
             {
               "sender": "meegle-bot@meshmail.ai",
@@ -57,7 +75,7 @@ npm run build
 }
 ```
 
-If `senderPolicies` is omitted, all senders are accepted. If set, the dispatch sender must match one policy and all configured dispatch-context rules for that sender must pass.
+If `senderPolicies` is omitted, no senders are authorized by default. Use the printed pairing QR/URL or configure at least one policy before sending `task.dispatch`; matching policies can also require all configured dispatch-context rules to pass.
 `taskDispatchConcurrency` is optional and defaults to `10`.
 
 The plugin also understands:

@@ -7,8 +7,11 @@ import {
   type AampAttachment,
   type AampThreadEvent,
   type AampStreamEvent,
+  type PairRequest,
   type ReceivedAttachment,
+  type SendPairRespondOptions,
   type SendResultOptions,
+  type StructuredResultField,
   type TaskCancel,
   type TaskDispatch,
 } from 'aamp-sdk'
@@ -17,6 +20,7 @@ import {
   type RegisteredAttachmentSlot,
   type RegisteredCommand,
   getNodeStateDir,
+  saveNodeConfig,
 } from './node-config.js'
 
 export interface RegisteredCommandDispatchPayload {
@@ -48,12 +52,15 @@ interface RegisteredCommandResultPayload {
     name: string
     contentType: string
   }>
+  structuredResult?: StructuredResultField[]
   timing: {
     startedAt: string
     finishedAt: string
     durationMs: number
   }
 }
+
+const STRUCTURED_RESULT_MARKER = 'AAMP_RESULT_JSON:'
 
 type StreamMode = 'none' | 'status-only' | 'full'
 
@@ -97,9 +104,14 @@ interface LoggerLike {
   error(message: string): void
 }
 
+export interface NodeServeOptions {
+  quiet?: boolean
+}
+
 interface AampNodeClient {
   on(event: 'task.dispatch', handler: (task: TaskDispatch) => void): void
   on(event: 'task.cancel', handler: (task: TaskCancel) => void): void
+  on(event: 'pair.request', handler: (request: PairRequest) => void): void
   on(event: 'connected', handler: () => void): void
   on(event: 'disconnected', handler: (reason: string) => void): void
   on(event: 'error', handler: (error: Error) => void): void
@@ -114,6 +126,7 @@ interface AampNodeClient {
   downloadBlob(blobId: string, filename?: string): Promise<Buffer>
   getThreadHistory(taskId: string, opts?: { includeStreamOpened?: boolean }): Promise<{ taskId: string; events: AampThreadEvent[] }>
   sendResult(opts: SendResultOptions & { rawBodyText?: string }): Promise<void>
+  sendPairRespond(opts: SendPairRespondOptions): Promise<void>
   email: string
 }
 
@@ -528,6 +541,9 @@ function decidePolicy(
   command: RegisteredCommand,
 ): { allowed: boolean; reason?: string } {
   const policy = config.senderPolicy
+  const pairedDecision = decidePairedSenderPolicy(policy.pairedSenders ?? [], dispatch)
+  if (pairedDecision.allowed) return pairedDecision
+
   const senderAllowed = policy.allowFrom.length === 0
     ? true
     : policy.allowFrom.some((pattern) => matchesSenderPattern(dispatch.from, pattern))
@@ -566,6 +582,27 @@ function decidePolicy(
   return { allowed: true }
 }
 
+function decidePairedSenderPolicy(
+  pairedSenders: NodeConfig['senderPolicy']['pairedSenders'],
+  dispatch: TaskDispatch,
+): { allowed: boolean; reason?: string } {
+  if (pairedSenders.length === 0) return { allowed: false, reason: 'no paired sender policy configured' }
+
+  const sender = normalizeEmail(dispatch.from)
+  const policy = pairedSenders.find((item) => normalizeEmail(item.sender) === sender)
+  if (!policy) return { allowed: false, reason: `sender ${dispatch.from} is not paired` }
+
+  for (const [key, allowedValues] of Object.entries(policy.dispatchContextRules ?? {})) {
+    if (!Array.isArray(allowedValues) || allowedValues.length === 0) continue
+    const actual = dispatch.dispatchContext?.[key]
+    if (!actual || !allowedValues.includes(actual)) {
+      return { allowed: false, reason: `dispatchContext does not match paired sender policy for ${dispatch.from}` }
+    }
+  }
+
+  return { allowed: true }
+}
+
 function summarizeExit(commandName: string, exitCode: number | null, cancelled: boolean): string {
   if (cancelled) return `Command ${commandName} was cancelled.`
   if (exitCode === 0) return `Command ${commandName} completed successfully.`
@@ -574,6 +611,133 @@ function summarizeExit(commandName: string, exitCode: number | null, cancelled: 
 
 function createResultBody(payload: RegisteredCommandResultPayload): string {
   return `${JSON.stringify(payload, null, 2)}\n`
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function normalizeStructuredResultField(value: unknown): StructuredResultField | null {
+  const record = asRecord(value)
+  if (!record) return null
+
+  const fieldKey = asString(record.fieldKey)
+  const fieldTypeKey = asString(record.fieldTypeKey)
+  const fieldAlias = asString(record.fieldAlias)
+  const index = asString(record.index)
+  const attachmentFilenames = Array.isArray(record.attachmentFilenames)
+    && record.attachmentFilenames.every((item) => typeof item === 'string')
+    ? record.attachmentFilenames
+    : undefined
+  const hasValue = Object.prototype.hasOwnProperty.call(record, 'value')
+
+  if (!fieldKey && !fieldTypeKey && !fieldAlias && !index && !attachmentFilenames?.length && !hasValue) {
+    return null
+  }
+
+  return {
+    ...(fieldKey ? { fieldKey } : {}),
+    ...(fieldTypeKey ? { fieldTypeKey } : {}),
+    ...(hasValue ? { value: record.value } : {}),
+    ...(fieldAlias ? { fieldAlias } : {}),
+    ...(index ? { index } : {}),
+    ...(attachmentFilenames ? { attachmentFilenames } : {}),
+  } as StructuredResultField
+}
+
+function normalizeStructuredResult(value: unknown): StructuredResultField[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const fields = value
+    .map((item) => normalizeStructuredResultField(item))
+    .filter((item): item is StructuredResultField => item != null)
+  return fields.length ? fields : undefined
+}
+
+function extractBalancedJsonRange(source: string): { jsonText: string; start: number; end: number } | null {
+  const start = source.search(/[\[{]/)
+  if (start < 0) return null
+
+  const stack: string[] = []
+  let inString = false
+  let escaped = false
+
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      continue
+    }
+    if (char === '{' || char === '[') {
+      stack.push(char)
+      continue
+    }
+    if (char !== '}' && char !== ']') continue
+
+    const opener = stack.pop()
+    if ((char === '}' && opener !== '{') || (char === ']' && opener !== '[')) return null
+    if (stack.length === 0) {
+      return {
+        jsonText: source.slice(start, i + 1),
+        start,
+        end: i + 1,
+      }
+    }
+  }
+
+  return null
+}
+
+function extractJsonFromMaybeFence(source: string): { jsonText: string; start: number; end: number } | null {
+  const trimmedStart = source.search(/\S/)
+  if (trimmedStart < 0) return null
+  const body = source.slice(trimmedStart)
+  const fenceMatch = /^```(?:json)?\s*\n?([\s\S]*?)\n?```/i.exec(body)
+  if (fenceMatch) {
+    return {
+      jsonText: fenceMatch[1].trim(),
+      start: trimmedStart,
+      end: trimmedStart + fenceMatch[0].length,
+    }
+  }
+
+  return extractBalancedJsonRange(source)
+}
+
+function parseStructuredResultFromCommandOutput(stdout: string): StructuredResultField[] | undefined {
+  const trimmed = stdout.trim()
+  if (!trimmed) return undefined
+
+  const markerIndex = trimmed.lastIndexOf(STRUCTURED_RESULT_MARKER)
+  const source = markerIndex >= 0 ? trimmed.slice(markerIndex + STRUCTURED_RESULT_MARKER.length) : trimmed
+  const jsonRange = extractJsonFromMaybeFence(source)
+  if (!jsonRange) return undefined
+
+  if (markerIndex < 0 && (jsonRange.start !== 0 || jsonRange.end !== source.length)) return undefined
+
+  try {
+    const parsed = JSON.parse(jsonRange.jsonText) as unknown
+    const record = asRecord(parsed)
+    return normalizeStructuredResult(
+      Array.isArray(parsed) ? parsed : record?.structuredResult ?? record?.structured_result,
+    )
+  } catch {
+    return undefined
+  }
 }
 
 interface ExecutionBuffers {
@@ -657,6 +821,7 @@ export class AampLocalNodeService {
   private readonly activeTasks = new Map<string, ActiveTask>()
   private readonly ledgerFile: string
   private ledger: LedgerState = { version: 1, tasks: {} }
+  private quietStartup = false
 
   constructor(
     private readonly nodeName: string,
@@ -668,14 +833,20 @@ export class AampLocalNodeService {
     this.ledgerFile = ledgerFilePath(nodeName)
   }
 
-  async start(): Promise<void> {
+  async start(options: NodeServeOptions = {}): Promise<void> {
+    this.quietStartup = options.quiet === true
     this.ledger = await loadLedger(this.nodeName)
     await writeJsonFile(this.ledgerFile, this.ledger)
     this.attachHandlers()
     await this.client.connect()
-    this.logger.log(`[AAMP] node "${this.nodeName}" connected as ${this.client.email} (${formatTransport(this.client)})`)
+    if (!this.quietStartup) {
+      this.logger.log(`[AAMP] node "${this.nodeName}" connected as ${this.client.email} (${formatTransport(this.client)})`)
+    }
     const reconciled = await this.client.reconcileRecentEmails(50, { includeHistorical: true })
-    this.logger.log(`[AAMP] node "${this.nodeName}" reconciled ${reconciled} recent email(s) on startup`)
+    if (!this.quietStartup) {
+      this.logger.log(`[AAMP] node "${this.nodeName}" reconciled ${reconciled} recent email(s) on startup`)
+    }
+    this.quietStartup = false
   }
 
   stop(): void {
@@ -689,10 +860,14 @@ export class AampLocalNodeService {
 
   private attachHandlers(): void {
     this.client.on('connected', () => {
-      this.logger.log(`[AAMP] node transport ready (${formatTransport(this.client)})`)
+      if (!this.quietStartup) {
+        this.logger.log(`[AAMP] node transport ready (${formatTransport(this.client)})`)
+      }
     })
     this.client.on('disconnected', (reason) => {
-      this.logger.log(`[AAMP] node disconnected: ${reason}`)
+      if (!this.quietStartup) {
+        this.logger.log(`[AAMP] node disconnected: ${reason}`)
+      }
     })
     this.client.on('error', (error) => {
       this.logger.error(`[AAMP] node error: ${error.message}`)
@@ -707,6 +882,75 @@ export class AampLocalNodeService {
         this.logger.error(`[AAMP] cancel ${cancel.taskId} failed: ${error instanceof Error ? error.message : String(error)}`)
       })
     })
+    this.client.on('pair.request', (request) => {
+      void this.handlePairRequest(request).catch((error) => {
+        this.logger.error(`[AAMP] pair.request failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    })
+  }
+
+  private async handlePairRequest(request: PairRequest): Promise<void> {
+    if (normalizeEmail(request.to) !== normalizeEmail(this.client.email)) return
+
+    const pairing = this.config.pairing
+    if (!pairing || pairing.consumedAt || pairing.mailbox.toLowerCase() !== normalizeEmail(this.client.email)) {
+      const reason = 'no active pairing code'
+      this.logger.log(`[AAMP] rejected pair.request from ${request.from}: ${reason}`)
+      await this.sendPairResponse(request, false, reason)
+      return
+    }
+    if (pairing.pairCode !== request.pairCode || new Date(pairing.expiresAt).getTime() <= Date.now()) {
+      const reason = 'invalid or expired pair code'
+      this.logger.log(`[AAMP] rejected pair.request from ${request.from}: ${reason}`)
+      await this.sendPairResponse(request, false, reason)
+      return
+    }
+
+    const sender = normalizeEmail(request.from)
+    const pairedSenders = this.config.senderPolicy.pairedSenders ?? []
+    this.config.senderPolicy.pairedSenders = [
+      ...pairedSenders.filter((item) => normalizeEmail(item.sender) !== sender),
+      {
+        sender,
+        dispatchContextRules: request.dispatchContextRules ?? {},
+        pairedAt: new Date().toISOString(),
+      },
+    ]
+    await saveNodeConfig(this.nodeName, this.config)
+    this.logger.log(`[AAMP] paired sender ${sender}; node config updated`)
+    if (await this.sendPairResponse(request, true)) {
+      this.config.pairing = {
+        ...pairing,
+        pairCode: '',
+        consumedAt: new Date().toISOString(),
+      }
+      await saveNodeConfig(this.nodeName, this.config)
+    } else {
+      this.logger.log(`[AAMP] pairing code left active so ${request.from} can retry before it expires`)
+    }
+  }
+
+  private async sendPairResponse(request: PairRequest, success: boolean, reason?: string): Promise<boolean> {
+    let lastError: unknown
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await this.client.sendPairRespond({
+          to: request.from,
+          taskId: request.taskId,
+          success,
+          reason,
+          inReplyTo: request.messageId,
+        })
+        return true
+      } catch (error) {
+        lastError = error
+        if (attempt < 3) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1_000))
+        }
+      }
+    }
+    this.logger.error(`[AAMP] pair.respond failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+    return false
   }
 
   private async updateLedger(entry: LedgerEntry): Promise<void> {
@@ -1043,6 +1287,9 @@ export class AampLocalNodeService {
       attachments.push(await createOutputAttachment(stderrFile, `${sanitizeName(params.command.name)}-stderr.txt`))
       resultAttachments.push({ name: `${sanitizeName(params.command.name)}-stderr.txt`, contentType: 'text/plain' })
     }
+    const structuredResult = !preview.stdoutTruncated
+      ? parseStructuredResultFromCommandOutput(preview.stdoutPreview)
+      : undefined
 
     const resultPayload: RegisteredCommandResultPayload = {
       kind: 'registered-command-result/v1',
@@ -1057,6 +1304,7 @@ export class AampLocalNodeService {
         stderr: preview.stderrTruncated,
       },
       ...(resultAttachments.length ? { attachments: resultAttachments } : {}),
+      ...(structuredResult?.length ? { structuredResult } : {}),
       timing: {
         startedAt: params.startedAt.toISOString(),
         finishedAt: finishedAt.toISOString(),
@@ -1074,6 +1322,7 @@ export class AampLocalNodeService {
       errorMsg: status === 'rejected' ? preview.stderrPreview || undefined : undefined,
       inReplyTo: params.dispatch.messageId,
       rawBodyText: createResultBody(resultPayload),
+      structuredResult,
       attachments,
     })
     await this.closeStream(params.streamId, { status, exitCode })
@@ -1105,12 +1354,16 @@ export async function runNodeServe(
   nodeName: string,
   config: NodeConfig,
   logger: LoggerLike = console,
+  options: NodeServeOptions = {},
 ): Promise<void> {
   const client = AampClient.fromMailboxIdentity({
     ...config.mailbox,
   }) as unknown as AampNodeClient
   const service = new AampLocalNodeService(nodeName, config, client, logger)
-  await service.start()
+  await service.start({ quiet: options.quiet })
+  if (options.quiet) {
+    logger.log(`AAMP node running:\n   ${nodeName}: ${client.email}`)
+  }
 
   const shutdown = () => {
     service.stop()

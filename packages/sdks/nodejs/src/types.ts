@@ -11,6 +11,8 @@ export type AampIntent =
   | 'task.help_needed'
   | 'task.ack'
   | 'task.stream.opened'
+  | 'pair.request'
+  | 'pair.respond'
   | 'card.query'
   | 'card.response'
 
@@ -25,6 +27,8 @@ export type TaskStatus =
   | 'help_needed'
   | 'cancelled'
   | 'expired'
+
+export type AampFetch = typeof fetch
 
 // =====================================================
 // AAMP Header constants
@@ -45,6 +49,8 @@ export const AAMP_HEADER = {
   BLOCKED_REASON: 'X-AAMP-BlockedReason',
   SUGGESTED_OPTIONS: 'X-AAMP-SuggestedOptions',
   STREAM_ID: 'X-AAMP-Stream-Id',
+  PAIR_CODE: 'X-AAMP-Pair-Code',
+  DISPATCH_CONTEXT_RULES: 'X-AAMP-Dispatch-Context-Rules',
   PARENT_TASK_ID: 'X-AAMP-ParentTaskId',
   CARD_SUMMARY: 'X-AAMP-Card-Summary',
 } as const
@@ -169,6 +175,33 @@ export interface TaskStreamOpened {
   messageId?: string
 }
 
+export interface PairRequest {
+  protocolVersion: string
+  intent: 'pair.request'
+  taskId: string
+  pairCode: string
+  dispatchContextRules: Record<string, string[]>
+  from: string
+  to: string
+  messageId?: string
+  subject: string
+  bodyText: string
+}
+
+export interface PairRespond {
+  protocolVersion: string
+  intent: 'pair.respond'
+  taskId: string
+  status: 'completed' | 'rejected'
+  success: boolean
+  reason?: string
+  from: string
+  to: string
+  messageId?: string
+  subject: string
+  bodyText: string
+}
+
 export interface CardQuery {
   protocolVersion: string
   intent: 'card.query'
@@ -219,6 +252,8 @@ export type AampMessage =
   | TaskHelp
   | TaskAck
   | TaskStreamOpened
+  | PairRequest
+  | PairRespond
   | CardQuery
   | CardResponse
   | HumanReply
@@ -238,6 +273,15 @@ export interface AampClientConfig {
 
   /** Optional AAMP discovery base URL. Defaults to baseUrl and is used for same-domain send fallback via /.well-known/aamp + aamp.mailbox.send. */
   httpSendBaseUrl?: string
+
+  /** Optional fetch implementation for sandboxed runtimes such as Lark Base FaaS. */
+  fetch?: AampFetch
+
+  /** Force sendTask/sendResult/etc. through the AAMP HTTP helper instead of SMTP. */
+  forceHttpSend?: boolean
+
+  /** Persist HTTP-sent mail to Sent via JMAP. Defaults to true when HTTP auth is available. */
+  persistSentCopy?: boolean
 
   /** SMTP submission host. If omitted, derived from baseUrl. */
   smtpHost?: string
@@ -272,6 +316,15 @@ export interface AampMailboxIdentityConfig {
 
   /** SMTP submission port (default: 587) */
   smtpPort?: number
+
+  /** Optional fetch implementation for sandboxed runtimes such as Lark Base FaaS. */
+  fetch?: AampFetch
+
+  /** Force sendTask/sendResult/etc. through the AAMP HTTP helper instead of SMTP. */
+  forceHttpSend?: boolean
+
+  /** Persist HTTP-sent mail to Sent via JMAP. Defaults to true when HTTP auth is available. */
+  persistSentCopy?: boolean
 
   /** How often to retry failed JMAP connection (ms, default: 5000) */
   reconnectInterval?: number
@@ -335,11 +388,15 @@ export interface AampThreadEvent {
   intent: AampIntent
   from: string
   to: string
+  status?: string | null
   title?: string | null
   bodyText?: string | null
   output?: string | null
+  errorMsg?: string | null
+  structuredResult?: StructuredResultField[]
   question?: string | null
   blockedReason?: string | null
+  attachments?: ReceivedAttachment[]
   messageId?: string | null
   createdAt: string
 }
@@ -457,6 +514,21 @@ export interface SendCardQueryOptions {
   inReplyTo?: string
 }
 
+export interface SendPairRequestOptions {
+  to: string
+  taskId?: string
+  pairCode: string
+  dispatchContextRules?: Record<string, string[]>
+}
+
+export interface SendPairRespondOptions {
+  to: string
+  taskId: string
+  success: boolean
+  reason?: string
+  inReplyTo?: string
+}
+
 export interface SendCardResponseOptions {
   to: string
   taskId: string
@@ -548,6 +620,8 @@ export interface AampClientEvents {
   'task.help_needed': (help: TaskHelp) => void
   'task.ack': (ack: TaskAck) => void
   'task.stream.opened': (stream: TaskStreamOpened) => void
+  'pair.request': (request: PairRequest) => void
+  'pair.respond': (response: PairRespond) => void
   'card.query': (query: CardQuery) => void
   'card.response': (response: CardResponse) => void
   /** Emitted when a standard email reply (no X-AAMP headers) is received for a known thread.

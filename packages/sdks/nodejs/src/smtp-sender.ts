@@ -9,6 +9,26 @@ import { randomUUID } from 'crypto'
 
 /** Strip CR/LF to prevent email header injection */
 const sanitize = (s: string) => s.replace(/[\r\n]/g, ' ').trim()
+
+const HTTP_SEND_MAX_ATTEMPTS = 4
+const HTTP_SEND_RETRY_BASE_DELAY_MS = 500
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isRetryableHttpStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500
+}
+
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const details = err as Error & { code?: string; cause?: unknown }
+  const parts = [err.message]
+  if (details.code) parts.push(`code=${details.code}`)
+  if (details.cause instanceof Error) parts.push(`cause=${describeError(details.cause)}`)
+  return parts.join(' | ')
+}
 import {
   buildDispatchHeaders,
   buildCancelHeaders,
@@ -16,6 +36,8 @@ import {
   buildHelpHeaders,
   buildAckHeaders,
   buildStreamOpenedHeaders,
+  buildPairRequestHeaders,
+  buildPairRespondHeaders,
   buildCardQueryHeaders,
   buildCardResponseHeaders,
 } from './parser.js'
@@ -26,6 +48,9 @@ import type {
   SendCardQueryOptions,
   SendCardResponseOptions,
   SendCancelOptions,
+  AampFetch,
+  SendPairRequestOptions,
+  SendPairRespondOptions,
 } from './types.js'
 
 export interface SmtpConfig {
@@ -35,6 +60,9 @@ export interface SmtpConfig {
   password: string
   httpBaseUrl?: string
   authToken?: string
+  fetch?: AampFetch
+  forceHttpSend?: boolean
+  persistSentCopy?: boolean
   secure?: boolean
   /** Whether to reject unauthorized TLS certificates (default: true) */
   rejectUnauthorized?: boolean
@@ -45,6 +73,9 @@ export interface MailboxIdentityConfig {
   password: string
   baseUrl?: string
   smtpPort?: number
+  fetch?: AampFetch
+  forceHttpSend?: boolean
+  persistSentCopy?: boolean
   secure?: boolean
   rejectUnauthorized?: boolean
 }
@@ -64,10 +95,12 @@ export function deriveMailboxServiceDefaults(email: string, baseUrl?: string): {
 
 export class SmtpSender {
   private transport: Transporter
+  private readonly fetch: AampFetch
   private discoveredApiUrlPromise: Promise<string> | null = null
   private jmapSessionPromise: Promise<{
     accountId: string
     apiUrl: string
+    uploadUrl: string
   }> | null = null
   private sentMailboxIdPromise: Promise<string | null> | null = null
 
@@ -80,12 +113,16 @@ export class SmtpSender {
       password: config.password,
       httpBaseUrl: derived.httpBaseUrl,
       authToken: Buffer.from(`${config.email}:${config.password}`).toString('base64'),
+      fetch: config.fetch,
+      forceHttpSend: config.forceHttpSend,
+      persistSentCopy: config.persistSentCopy,
       secure: config.secure,
       rejectUnauthorized: config.rejectUnauthorized,
     })
   }
 
   constructor(private readonly config: SmtpConfig) {
+    this.fetch = config.fetch ?? fetch
     this.transport = createTransport({
       host: config.host,
       port: config.port,
@@ -109,6 +146,9 @@ export class SmtpSender {
   }
 
   private shouldUseHttpFallback(to: string): boolean {
+    if (this.config.forceHttpSend) {
+      return Boolean(this.config.httpBaseUrl && this.config.authToken)
+    }
     return Boolean(
       this.config.httpBaseUrl
       && this.config.authToken
@@ -125,7 +165,7 @@ export class SmtpSender {
 
     if (!this.discoveredApiUrlPromise) {
       this.discoveredApiUrlPromise = (async () => {
-        const discoveryRes = await fetch(`${base}/.well-known/aamp`)
+        const discoveryRes = await this.fetch(`${base}/.well-known/aamp`)
         if (!discoveryRes.ok) {
           throw new Error(`AAMP discovery failed: ${discoveryRes.status}`)
         }
@@ -155,37 +195,65 @@ export class SmtpSender {
     if (!this.config.authToken) {
       throw new Error('HTTP send fallback is not configured')
     }
-    const apiUrl = new URL(await this.resolveAampApiUrl())
-    apiUrl.searchParams.set('action', 'aamp.mailbox.send')
 
-    const res = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${this.config.authToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        to: opts.to,
-        subject: opts.subject,
-        text: opts.text,
-        aampHeaders: opts.aampHeaders,
-        attachments: opts.attachments?.map((a) => ({
-          filename: a.filename,
-          contentType: a.contentType,
-          content: typeof a.content === 'string' ? a.content : a.content.toString('base64'),
-        })),
-      }),
-    })
+    let lastError: Error | null = null
+    for (let attempt = 1; attempt <= HTTP_SEND_MAX_ATTEMPTS; attempt += 1) {
+      const apiUrl = new URL(await this.resolveAampApiUrl())
+      apiUrl.searchParams.set('action', 'aamp.mailbox.send')
 
-    const data = await res.json().catch(() => ({})) as { details?: string; messageId?: string }
-    if (!res.ok) {
-      throw new Error(data.details || `HTTP send failed: ${res.status}`)
+      try {
+        const res = await this.fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Basic ${this.config.authToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            to: opts.to,
+            subject: opts.subject,
+            text: opts.text,
+            aampHeaders: opts.aampHeaders,
+            attachments: opts.attachments?.map((a) => ({
+              filename: a.filename,
+              contentType: a.contentType,
+              content: typeof a.content === 'string' ? a.content : a.content.toString('base64'),
+            })),
+          }),
+        })
+
+        const data = await res.json().catch(() => ({})) as { details?: string; messageId?: string }
+        if (res.ok) return { messageId: data.messageId }
+
+        lastError = new Error(data.details || `HTTP send failed: ${res.status}`)
+        if (!isRetryableHttpStatus(res.status) || attempt === HTTP_SEND_MAX_ATTEMPTS) break
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err))
+        if (attempt === HTTP_SEND_MAX_ATTEMPTS) {
+          lastError = new Error(`HTTP send failed after ${attempt} attempts: ${describeError(lastError)}`)
+          break
+        }
+      }
+
+      await sleep(HTTP_SEND_RETRY_BASE_DELAY_MS * attempt)
     }
-    return { messageId: data.messageId }
+
+    throw lastError ?? new Error('HTTP send failed')
   }
 
   private canPersistSentCopy(): boolean {
+    if (this.config.persistSentCopy === false) return false
     return Boolean(this.config.httpBaseUrl && this.config.authToken)
+  }
+
+  private normalizeAttachments(
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer | string }>,
+  ): Array<{ filename: string; contentType: string; content: Buffer }> | undefined {
+    if (!attachments?.length) return undefined
+    return attachments.map(a => ({
+      filename: a.filename,
+      contentType: a.contentType,
+      content: typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content,
+    }))
   }
 
   private getJmapAuthHeader(): string {
@@ -195,7 +263,21 @@ export class SmtpSender {
     return `Basic ${this.config.authToken}`
   }
 
-  private async resolveJmapSession(): Promise<{ accountId: string; apiUrl: string }> {
+  private rewriteUrlToConfiguredOrigin(rawUrl: string): string {
+    const base = this.config.httpBaseUrl?.replace(/\/$/, '')
+    if (!base) return rawUrl
+
+    const parsed = new URL(rawUrl, `${base}/`)
+    const configured = new URL(base)
+    parsed.protocol = configured.protocol
+    parsed.username = configured.username
+    parsed.password = configured.password
+    parsed.hostname = configured.hostname
+    parsed.port = configured.port
+    return parsed.toString()
+  }
+
+  private async resolveJmapSession(): Promise<{ accountId: string; apiUrl: string; uploadUrl: string }> {
     const base = this.config.httpBaseUrl?.replace(/\/$/, '')
     if (!base) {
       throw new Error('JMAP base URL is not configured')
@@ -203,7 +285,7 @@ export class SmtpSender {
 
     if (!this.jmapSessionPromise) {
       this.jmapSessionPromise = (async () => {
-        const res = await fetch(`${base}/.well-known/jmap`, {
+        const res = await this.fetch(`${base}/.well-known/jmap`, {
           headers: { Authorization: this.getJmapAuthHeader() },
         })
         if (!res.ok) {
@@ -213,6 +295,7 @@ export class SmtpSender {
         const session = await res.json() as {
           accounts?: Record<string, unknown>
           primaryAccounts?: Record<string, string>
+          uploadUrl?: string
         }
         const accountId =
           session.primaryAccounts?.['urn:ietf:params:jmap:mail']
@@ -225,6 +308,9 @@ export class SmtpSender {
         return {
           accountId,
           apiUrl: `${base}/jmap/`,
+          uploadUrl: this.rewriteUrlToConfiguredOrigin(
+            session.uploadUrl ?? `${base}/jmap/upload/{accountId}/`,
+          ),
         }
       })()
     }
@@ -241,7 +327,7 @@ export class SmtpSender {
     methodCalls: Array<[string, Record<string, unknown>, string]>,
   ): Promise<Array<[string, Record<string, unknown>, string]>> {
     const session = await this.resolveJmapSession()
-    const res = await fetch(session.apiUrl, {
+    const res = await this.fetch(session.apiUrl, {
       method: 'POST',
       headers: {
         Authorization: this.getJmapAuthHeader(),
@@ -268,6 +354,55 @@ export class SmtpSender {
       methodResponses?: Array<[string, Record<string, unknown>, string]>
     }
     return data.methodResponses ?? []
+  }
+
+  private async uploadSentAttachment(attachment: {
+    filename: string
+    contentType: string
+    content: Buffer | string
+  }): Promise<{
+    blobId: string
+    type: string
+    size: number
+    name: string
+  }> {
+    const session = await this.resolveJmapSession()
+    const content = typeof attachment.content === 'string'
+      ? Buffer.from(attachment.content, 'base64')
+      : attachment.content
+    const uploadUrl = session.uploadUrl
+      .replace(/\{accountId\}|%7BaccountId%7D/gi, encodeURIComponent(session.accountId))
+
+    const res = await this.fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: this.getJmapAuthHeader(),
+        'Content-Type': attachment.contentType,
+      },
+      body: content as unknown as BodyInit,
+    })
+
+    const bodyText = await res.text()
+    if (!res.ok) {
+      throw new Error(`JMAP attachment upload failed: ${res.status} ${bodyText}`)
+    }
+
+    let data: { blobId?: string; type?: string; size?: number }
+    try {
+      data = JSON.parse(bodyText) as { blobId?: string; type?: string; size?: number }
+    } catch {
+      throw new Error('JMAP attachment upload returned invalid JSON')
+    }
+    if (!data.blobId) {
+      throw new Error('JMAP attachment upload did not return blobId')
+    }
+
+    return {
+      blobId: data.blobId,
+      type: data.type ?? attachment.contentType,
+      size: data.size ?? content.byteLength,
+      name: attachment.filename,
+    }
   }
 
   private async getSentMailboxId(): Promise<string | null> {
@@ -301,25 +436,53 @@ export class SmtpSender {
     messageId?: string
     inReplyTo?: string
     references?: string
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer | string }>
   }): Promise<void> {
     if (!this.canPersistSentCopy()) return
 
     const sentMailboxId = await this.getSentMailboxId()
     if (!sentMailboxId) return
 
+    const uploadedAttachments = params.attachments?.length
+      ? await Promise.all(params.attachments.map((attachment) => this.uploadSentAttachment(attachment)))
+      : []
+
     const emailCreate: Record<string, unknown> = {
       mailboxIds: { [sentMailboxId]: true },
       from: [{ email: params.from }],
       to: [{ email: params.to }],
       subject: params.subject,
-      bodyValues: {
+      keywords: { '$seen': true },
+    }
+
+    if (uploadedAttachments.length) {
+      emailCreate.bodyStructure = {
+        type: 'multipart/mixed',
+        subParts: [
+          { partId: 'body', type: 'text/plain' },
+          ...uploadedAttachments.map((attachment) => ({
+            blobId: attachment.blobId,
+            type: attachment.type,
+            size: attachment.size,
+            name: attachment.name,
+            disposition: 'attachment',
+          })),
+        ],
+      }
+      emailCreate.bodyValues = {
+        body: {
+          value: params.text,
+          isTruncated: false,
+        },
+      }
+    } else {
+      emailCreate.bodyValues = {
         body: {
           value: params.text,
           charset: 'utf-8',
         },
-      },
-      textBody: [{ partId: 'body', type: 'text/plain' }],
-      keywords: { '$seen': true },
+      }
+      emailCreate.textBody = [{ partId: 'body', type: 'text/plain' }]
     }
 
     if (params.inReplyTo) {
@@ -349,11 +512,17 @@ export class SmtpSender {
     messageId?: string
     inReplyTo?: string
     references?: string
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer | string }>
   }): Promise<void> {
     if (!this.canPersistSentCopy()) return
     try {
       await this.saveToSent(params)
     } catch {
+      if (params.attachments?.length) {
+        try {
+          await this.saveToSent({ ...params, attachments: undefined })
+        } catch { /* non-fatal */ }
+      }
       // Non-fatal: mail delivery already succeeded, Sent copy is only for visibility/debugging.
     }
   }
@@ -365,6 +534,7 @@ export class SmtpSender {
    */
   async sendTask(opts: SendTaskOptions): Promise<{ taskId: string; messageId: string }> {
     const taskId = opts.taskId ?? randomUUID()
+    const attachments = this.normalizeAttachments(opts.attachments)
     const aampHeaders = buildDispatchHeaders({
       taskId,
       priority: opts.priority,
@@ -391,12 +561,8 @@ export class SmtpSender {
       headers: aampHeaders,
     }
 
-    if (opts.attachments?.length) {
-      sendMailOpts.attachments = opts.attachments.map(a => ({
-        filename: a.filename,
-        content: typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content,
-        contentType: a.contentType,
-      }))
+    if (attachments) {
+      sendMailOpts.attachments = attachments
     }
 
     if (this.shouldUseHttpFallback(opts.to)) {
@@ -405,11 +571,7 @@ export class SmtpSender {
         subject: sendMailOpts.subject as string,
         text: sendMailOpts.text as string,
         aampHeaders,
-        attachments: opts.attachments?.map(a => ({
-          filename: a.filename,
-          contentType: a.contentType,
-          content: typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content,
-        })),
+        attachments,
       })
       await this.saveToSentBestEffort({
         from: this.config.user,
@@ -418,6 +580,7 @@ export class SmtpSender {
         text: sendMailOpts.text as string,
         aampHeaders,
         messageId: info.messageId,
+        attachments,
       })
       return { taskId, messageId: info.messageId ?? '' }
     }
@@ -430,6 +593,7 @@ export class SmtpSender {
       text: sendMailOpts.text as string,
       aampHeaders,
       messageId: info.messageId,
+      attachments,
     })
 
     return { taskId, messageId: info.messageId ?? '' }
@@ -439,6 +603,7 @@ export class SmtpSender {
    * Send a task.result email back to the dispatcher
    */
   async sendResult(opts: SendResultOptions): Promise<void> {
+    const attachments = this.normalizeAttachments(opts.attachments)
     const aampHeaders = buildResultHeaders({
       taskId: opts.taskId,
       status: opts.status,
@@ -469,12 +634,8 @@ export class SmtpSender {
       mailOpts.inReplyTo = opts.inReplyTo
       mailOpts.references = opts.inReplyTo
     }
-    if (opts.attachments?.length) {
-      mailOpts.attachments = opts.attachments.map(a => ({
-        filename: a.filename,
-        content: typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content,
-        contentType: a.contentType,
-      }))
+    if (attachments) {
+      mailOpts.attachments = attachments
     }
 
     if (this.shouldUseHttpFallback(opts.to)) {
@@ -483,11 +644,7 @@ export class SmtpSender {
         subject: mailOpts.subject as string,
         text: mailOpts.text as string,
         aampHeaders,
-        attachments: opts.attachments?.map(a => ({
-          filename: a.filename,
-          contentType: a.contentType,
-          content: typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content,
-        })),
+        attachments,
       })
       await this.saveToSentBestEffort({
         from: this.config.user,
@@ -498,6 +655,7 @@ export class SmtpSender {
         messageId: info.messageId,
         inReplyTo: opts.inReplyTo,
         references: opts.inReplyTo,
+        attachments,
       })
       return
     }
@@ -511,6 +669,7 @@ export class SmtpSender {
       messageId: info.messageId,
       inReplyTo: opts.inReplyTo,
       references: opts.inReplyTo,
+      attachments,
     })
   }
 
@@ -518,6 +677,7 @@ export class SmtpSender {
    * Send a task.help_needed email when the agent is blocked
    */
   async sendHelp(opts: SendHelpOptions): Promise<void> {
+    const attachments = this.normalizeAttachments(opts.attachments)
     const aampHeaders = buildHelpHeaders({
       taskId: opts.taskId,
       question: opts.question,
@@ -550,12 +710,8 @@ export class SmtpSender {
       helpMailOpts.inReplyTo = opts.inReplyTo
       helpMailOpts.references = opts.inReplyTo
     }
-    if (opts.attachments?.length) {
-      helpMailOpts.attachments = opts.attachments.map(a => ({
-        filename: a.filename,
-        content: typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content,
-        contentType: a.contentType,
-      }))
+    if (attachments) {
+      helpMailOpts.attachments = attachments
     }
 
     if (this.shouldUseHttpFallback(opts.to)) {
@@ -564,11 +720,7 @@ export class SmtpSender {
         subject: helpMailOpts.subject as string,
         text: helpMailOpts.text as string,
         aampHeaders,
-        attachments: opts.attachments?.map(a => ({
-          filename: a.filename,
-          contentType: a.contentType,
-          content: typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content,
-        })),
+        attachments,
       })
       await this.saveToSentBestEffort({
         from: this.config.user,
@@ -579,6 +731,7 @@ export class SmtpSender {
         messageId: info.messageId,
         inReplyTo: opts.inReplyTo,
         references: opts.inReplyTo,
+        attachments,
       })
       return
     }
@@ -592,6 +745,7 @@ export class SmtpSender {
       messageId: info.messageId,
       inReplyTo: opts.inReplyTo,
       references: opts.inReplyTo,
+      attachments,
     })
   }
 
@@ -744,6 +898,116 @@ export class SmtpSender {
       to: opts.to,
       subject: mailOpts.subject as string,
       text: mailOpts.text as string,
+      aampHeaders,
+      messageId: info.messageId,
+      inReplyTo: opts.inReplyTo,
+      references: opts.inReplyTo,
+    })
+  }
+
+  async sendPairRequest(opts: SendPairRequestOptions): Promise<{ taskId: string; messageId: string }> {
+    const taskId = opts.taskId ?? randomUUID()
+    const aampHeaders = buildPairRequestHeaders({
+      taskId,
+      pairCode: opts.pairCode,
+      dispatchContextRules: opts.dispatchContextRules ?? {},
+    })
+    const text = [
+      'AAMP Pair Request',
+      '',
+      `Pair code: ${opts.pairCode}`,
+      `Dispatch context rules: ${JSON.stringify(opts.dispatchContextRules ?? {})}`,
+    ].join('\n')
+    const mailOpts: Record<string, unknown> = {
+      from: this.config.user,
+      to: opts.to,
+      subject: '[AAMP Pair] Connection request',
+      text,
+      headers: aampHeaders,
+    }
+
+    if (this.shouldUseHttpFallback(opts.to)) {
+      const info = await this.sendViaHttp({
+        to: opts.to,
+        subject: mailOpts.subject as string,
+        text,
+        aampHeaders,
+      })
+      await this.saveToSentBestEffort({
+        from: this.config.user,
+        to: opts.to,
+        subject: mailOpts.subject as string,
+        text,
+        aampHeaders,
+        messageId: info.messageId,
+      })
+      return { taskId, messageId: info.messageId ?? '' }
+    }
+
+    const info = await this.transport.sendMail(mailOpts)
+    await this.saveToSentBestEffort({
+      from: this.config.user,
+      to: opts.to,
+      subject: mailOpts.subject as string,
+      text,
+      aampHeaders,
+      messageId: info.messageId,
+    })
+    return { taskId, messageId: info.messageId ?? '' }
+  }
+
+  async sendPairRespond(opts: SendPairRespondOptions): Promise<void> {
+    const aampHeaders = buildPairRespondHeaders({
+      taskId: opts.taskId,
+      success: opts.success,
+      reason: opts.reason,
+    })
+    const status = opts.success ? 'completed' : 'rejected'
+    const text = [
+      'AAMP Pair Response',
+      '',
+      `Task ID: ${opts.taskId}`,
+      `Status: ${status}`,
+      ...(opts.reason?.trim() ? ['', `Reason: ${opts.reason.trim()}`] : []),
+    ].join('\n')
+    const mailOpts: Record<string, unknown> = {
+      from: this.config.user,
+      to: opts.to,
+      subject: `[AAMP Pair] ${status}`,
+      text,
+      headers: aampHeaders,
+    }
+    if (opts.inReplyTo) {
+      mailOpts.inReplyTo = opts.inReplyTo
+      mailOpts.references = opts.inReplyTo
+    }
+
+    if (this.shouldUseHttpFallback(opts.to)) {
+      const info = await this.sendViaHttp({
+        to: opts.to,
+        subject: mailOpts.subject as string,
+        text,
+        aampHeaders,
+      })
+      await this.saveToSentBestEffort({
+        from: this.config.user,
+        to: opts.to,
+        subject: mailOpts.subject as string,
+        text,
+        aampHeaders,
+        messageId: info.messageId,
+        inReplyTo: opts.inReplyTo,
+        references: opts.inReplyTo,
+      })
+      return
+    }
+
+    const info = await this.transport.sendMail(mailOpts)
+    await this.saveToSentBestEffort({
+      from: this.config.user,
+      to: opts.to,
+      subject: mailOpts.subject as string,
+      text,
       aampHeaders,
       messageId: info.messageId,
       inReplyTo: opts.inReplyTo,

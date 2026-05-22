@@ -31,6 +31,7 @@ class FakeClient extends EventEmitter {
   downloadBlob = vi.fn().mockResolvedValue(Buffer.from('patch-content'))
   getThreadHistory = vi.fn().mockResolvedValue({ taskId: 'task-1', events: [] })
   sendResult = vi.fn().mockResolvedValue(undefined)
+  sendPairRespond = vi.fn().mockResolvedValue(undefined)
 
   override on(event: string, handler: (...args: any[]) => void): this {
     return super.on(event, handler)
@@ -74,6 +75,7 @@ function createNodeConfig(workdir: string): NodeConfig {
       allowFrom: [],
       allowCommands: [],
       requireContext: {},
+      pairedSenders: [],
     },
   }
 }
@@ -202,6 +204,54 @@ Dispatch metadata
     const ledgerFile = path.join(tempHome, '.aamp', 'cli', 'node-state', 'default', 'ledger.json')
     const ledger = JSON.parse(readFileSync(ledgerFile, 'utf8'))
     expect(ledger.tasks['task-1'].status).toBe('completed')
+  })
+
+  it('passes structuredResult from registered command stdout', async () => {
+    const workdir = mkdtempSync(path.join(os.tmpdir(), 'aamp-node-workdir-'))
+    const config = createNodeConfig(workdir)
+    config.commands[0].maxStdoutBytes = 4096
+    const client = new FakeClient()
+    const { fakeSpawn } = createFakeSpawn([
+      'AAMP_RESULT_JSON:',
+      '```json',
+      JSON.stringify({
+        output: 'filled fields',
+        structuredResult: [
+          { fieldKey: 'description', fieldTypeKey: 'multi-text', value: 'Hello Rich Text' },
+        ],
+      }),
+      '```',
+    ].join('\n'))
+    const service = new AampLocalNodeService('default', config, client as any, console, fakeSpawn as any)
+
+    await service.start()
+
+    client.emit('task.dispatch', {
+      protocolVersion: '1.1',
+      intent: 'task.dispatch',
+      taskId: 'task-structured',
+      title: 'Run demo',
+      priority: 'normal',
+      from: 'dispatcher@meshmail.ai',
+      to: 'worker@meshmail.ai',
+      messageId: 'msg-structured',
+      subject: '[AAMP Task] Run demo',
+      bodyText: JSON.stringify({
+        kind: 'registered-command/v1',
+        command: 'demo.echo',
+        args: { value: 'hello' },
+      }),
+    })
+
+    await vi.waitFor(() => expect(client.sendResult).toHaveBeenCalledTimes(1))
+
+    const resultCall = client.sendResult.mock.calls[0]?.[0]
+    expect(resultCall.structuredResult).toEqual([
+      { fieldKey: 'description', fieldTypeKey: 'multi-text', value: 'Hello Rich Text' },
+    ])
+
+    const body = JSON.parse(String(resultCall.rawBodyText))
+    expect(body.structuredResult).toEqual(resultCall.structuredResult)
   })
 
   it('lists environment variable names but not values in capability cards', async () => {

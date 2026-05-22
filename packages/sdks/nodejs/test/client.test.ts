@@ -61,6 +61,8 @@ class FakeSmtpSender {
   sendResult = vi.fn().mockResolvedValue(undefined)
   sendHelp = vi.fn().mockResolvedValue(undefined)
   sendCancel = vi.fn().mockResolvedValue(undefined)
+  sendPairRequest = vi.fn().mockResolvedValue({ taskId: 'pair-1', messageId: 'msg-pair' })
+  sendPairRespond = vi.fn().mockResolvedValue(undefined)
   sendCardQuery = vi.fn().mockResolvedValue({ taskId: 'card-1', messageId: 'msg-card' })
   sendCardResponse = vi.fn().mockResolvedValue(undefined)
   verify = vi.fn().mockResolvedValue(true)
@@ -232,6 +234,49 @@ describe('AampClient', () => {
       taskId: 'card-7',
       summary: 'I can review code and triage alerts.',
       bodyText: 'Full capability card body',
+    })
+  })
+
+  it('forwards pair.respond and sends pair responses through SMTP sender', async () => {
+    const { AampClient } = await import('../src/client.js')
+    const client = new AampClient({
+      email: 'agent@meshmail.ai',
+      mailboxToken: Buffer.from('agent@meshmail.ai:password-1').toString('base64'),
+      baseUrl: 'https://meshmail.ai',
+    })
+
+    const seen: unknown[] = []
+    client.on('pair.respond', (payload) => seen.push(payload))
+
+    await client.connect()
+    lastJmapClient!.emit('pair.respond', {
+      taskId: 'pair-7',
+      from: 'agent@meshmail.ai',
+      to: 'app@meshmail.ai',
+      status: 'completed',
+      success: true,
+      subject: '[AAMP Pair] completed',
+      bodyText: 'AAMP Pair Response',
+    })
+
+    await client.sendPairRespond({
+      to: 'app@meshmail.ai',
+      taskId: 'pair-7',
+      success: true,
+      inReplyTo: '<pair-request>',
+    })
+
+    expect(seen).toEqual([
+      expect.objectContaining({
+        taskId: 'pair-7',
+        success: true,
+      }),
+    ])
+    expect(lastSmtpSender!.sendPairRespond).toHaveBeenCalledWith({
+      to: 'app@meshmail.ai',
+      taskId: 'pair-7',
+      success: true,
+      inReplyTo: '<pair-request>',
     })
   })
 
@@ -526,6 +571,92 @@ describe('AampClient', () => {
     expect(received).toHaveLength(2)
     expect(received.map((event) => event.text).join('')).toBe(orderedTokens.join(''))
     expect(appendCalls).toHaveLength(2)
+  })
+
+  it('reuses discovered stream endpoints for appends after stream creation', async () => {
+    const discoveryDoc = {
+      api: { url: '/api/aamp' },
+      capabilities: {
+        stream: {
+          transport: 'sse',
+          createAction: 'aamp.stream.create',
+          appendAction: 'aamp.stream.append',
+          closeAction: 'aamp.stream.close',
+          getAction: 'aamp.stream.get',
+          subscribeUrlTemplate: '/api/aamp/streams/{streamId}/events',
+        },
+      },
+    }
+    let discoveryCalls = 0
+
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/.well-known/aamp') {
+        discoveryCalls += 1
+        if (discoveryCalls === 1) {
+          return new Response(JSON.stringify(discoveryDoc), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response('Bad Gateway', { status: 502, statusText: 'Bad Gateway' })
+      }
+
+      if (url.pathname === '/api/aamp') {
+        const action = url.searchParams.get('action')
+        const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
+
+        if (action === 'aamp.stream.create') {
+          return new Response(JSON.stringify({
+            streamId: 'str_cached_discovery',
+            taskId: body.taskId,
+            ownerEmail: 'agent@meshmail.ai',
+            peerEmail: body.peerEmail,
+            status: 'created',
+            createdAt: '2026-04-16T10:00:00.000Z',
+          }), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
+        if (action === 'aamp.stream.append') {
+          return new Response(JSON.stringify({
+            id: '1',
+            streamId: body.streamId,
+            taskId: 'task-cached-discovery',
+            seq: 1,
+            timestamp: '2026-04-16T10:00:01.000Z',
+            type: body.type,
+            payload: body.payload,
+          }), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+      }
+
+      throw new Error(`Unexpected fetch URL in cached discovery test: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { AampClient } = await import('../src/client.js')
+    const client = new AampClient({
+      email: 'agent@meshmail.ai',
+      mailboxToken: Buffer.from('agent@meshmail.ai:password-1').toString('base64'),
+      baseUrl: 'https://meshmail.ai',
+    })
+
+    const created = await client.createStream({
+      taskId: 'task-cached-discovery',
+      peerEmail: 'dispatcher@meshmail.ai',
+    })
+    const appended = await client.appendStreamEvent({
+      streamId: created.streamId,
+      type: 'text.delta',
+      payload: { text: 'stream survives discovery outage' },
+    })
+
+    expect(appended.payload.text).toBe('stream survives discovery outage')
+    expect(discoveryCalls).toBe(1)
   })
 
   it('preserves A-Z order when each appendStreamEvent is awaited before sending the next token', async () => {

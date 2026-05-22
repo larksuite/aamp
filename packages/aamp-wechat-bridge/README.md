@@ -11,25 +11,37 @@ npm run build
 
 ## Usage
 
-Initialize local bridge config and mailbox identity:
+Initialize local bridge config and mailbox identity, then scan the QR code to
+login and start the daemon:
 
 ```bash
 ./dist/index.js init
 ```
 
-Login with WeChat QR scan:
+If the target Agent prints a pairing URL, initialize and authorize the bridge in
+one step:
+
+```bash
+./dist/index.js init --pairing-url "aamp://connect?mailbox=agent@meshmail.ai&pair_code=abc123"
+```
+
+The bridge sends `pair.request` from its own AAMP mailbox with
+`dispatchContextRules={ "source": ["wechat"] }`, so the Agent can accept future
+WeChat dispatches without manual sender policy editing. The Agent replies with
+`pair.respond` to indicate success or a failure reason.
+
+If you only want to write the local config without logging in or starting:
+
+```bash
+./dist/index.js init --no-start
+```
+
+`login`, `start`, and `run` remain available for existing configs:
 
 ```bash
 ./dist/index.js login
-```
-
-Run the daemon:
-
-```bash
 ./dist/index.js start
 ```
-
-`run` remains accepted as a backward-compatible alias for `start`.
 
 Inspect current config and login state:
 

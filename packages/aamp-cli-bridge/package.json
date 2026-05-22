@@ -4,7 +4,7 @@
     "dist"
   ],
   "license": "MIT",
-  "version": "0.1.1",
+  "version": "0.1.5",
   "description": "Bridge direct CLI agents into the AAMP email network with profile-driven command invocation",
   "type": "module",
   "main": "dist/index.js",
@@ -20,10 +20,12 @@
   },
   "dependencies": {
     "aamp-sdk": "file:../sdks/nodejs",
+    "qrcode-terminal": "^0.12.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "@types/qrcode-terminal": "^0.12.2",
     "tsx": "^4.7.1",
     "typescript": "^5.4.3"
   }

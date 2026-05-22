@@ -30,6 +30,16 @@
  */
 
 import { JmapPushClient } from './jmap-push.js'
+import {
+  buildPairingUrl,
+  consumePairingCode,
+  createPairedSenderPolicy,
+  createPairingCode,
+  isPairingUrl,
+  matchPairedSenderPolicy,
+  parsePairingUrl,
+  upsertPairedSenderPolicy,
+} from './pairing.js'
 import { SmtpSender, deriveMailboxServiceDefaults } from './smtp-sender.js'
 import { TinyEmitter } from './tiny-emitter.js'
 import { renderThreadHistoryForAgent } from './thread.js'
@@ -63,17 +73,22 @@ import type {
   StreamSubscription,
   TaskCancel,
   TaskDispatch,
+  AampFetch,
   TaskThreadHistory,
   TaskResult,
   TaskHelp,
   TaskAck,
   TaskStreamOpened,
+  PairRequest,
+  PairRespond,
   TaskStreamState,
   HumanReply,
   SendTaskOptions,
   SendResultOptions,
   SendHelpOptions,
   UpdateDirectoryProfileOptions,
+  SendPairRequestOptions,
+  SendPairRespondOptions,
 } from './types.js'
 
 function buildRegisteredCommandDispatchPayload(
@@ -143,6 +158,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
   private readonly taskDispatchConcurrency: number
   private readonly pendingTaskDispatches: TaskDispatch[] = []
   private activeTaskDispatchCount = 0
+  private discoveryPromise?: Promise<AampDiscoveryDocument>
   private readonly streamAppendQueues = new Map<string, {
     running: boolean
     operations: StreamAppendOperation[]
@@ -186,6 +202,9 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       password: config.smtpPassword,
       httpBaseUrl: config.httpSendBaseUrl ?? resolvedBaseUrl,
       authToken: mailboxToken,
+      fetch: config.fetch,
+      forceHttpSend: config.forceHttpSend,
+      persistSentCopy: config.persistSentCopy,
       rejectUnauthorized: config.rejectUnauthorized,
     })
 
@@ -212,6 +231,14 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
 
     this.jmapClient.on('task.stream.opened', (stream: TaskStreamOpened) => {
       this.emit('task.stream.opened', stream)
+    })
+
+    this.jmapClient.on('pair.request', (request: PairRequest) => {
+      this.emit('pair.request', request)
+    })
+
+    this.jmapClient.on('pair.respond', (response: PairRespond) => {
+      this.emit('pair.respond', response)
     })
 
     this.jmapClient.on('card.query', (query: CardQuery) => {
@@ -259,13 +286,32 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       smtpPassword: config.smtpPassword,
       reconnectInterval: config.reconnectInterval,
       taskDispatchConcurrency: config.taskDispatchConcurrency,
+      fetch: config.fetch,
+      forceHttpSend: config.forceHttpSend,
+      persistSentCopy: config.persistSentCopy,
       rejectUnauthorized: config.rejectUnauthorized,
     })
   }
 
-  static async discoverAampService(aampHost: string): Promise<AampDiscoveryDocument> {
+  static createPairingCode = createPairingCode
+
+  static buildPairingUrl = buildPairingUrl
+
+  static parsePairingUrl = parsePairingUrl
+
+  static isPairingUrl = isPairingUrl
+
+  static consumePairingCode = consumePairingCode
+
+  static createPairedSenderPolicy = createPairedSenderPolicy
+
+  static upsertPairedSenderPolicy = upsertPairedSenderPolicy
+
+  static matchPairedSenderPolicy = matchPairedSenderPolicy
+
+  static async discoverAampService(aampHost: string, fetchImpl: AampFetch = fetch): Promise<AampDiscoveryDocument> {
     const base = aampHost.replace(/\/$/, '')
-    const res = await fetch(`${base}/.well-known/aamp`)
+    const res = await fetchImpl(`${base}/.well-known/aamp`)
     if (!res.ok) {
       throw new Error(`AAMP discovery failed: ${res.status} ${res.statusText}`)
     }
@@ -284,22 +330,63 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       query?: Record<string, string | number | boolean | undefined>
       body?: unknown
       authToken?: string
+      fetch?: AampFetch
     },
   ): Promise<Response> {
-    const discovery = await AampClient.discoverAampService(base)
+    const fetchImpl = opts.fetch ?? fetch
+    const discovery = await AampClient.discoverAampService(base, fetchImpl)
     const apiUrl = new URL(discovery.api!.url!, `${base}/`)
     apiUrl.searchParams.set('action', opts.action)
     for (const [key, value] of Object.entries(opts.query ?? {})) {
       if (value == null) continue
       apiUrl.searchParams.set(key, String(value))
     }
-    return fetch(apiUrl, {
+    return fetchImpl(apiUrl, {
       method: opts.method ?? 'GET',
       headers: {
         ...(opts.authToken ? { Authorization: `Basic ${opts.authToken}` } : {}),
         ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(opts.body ? { body: JSON.stringify(opts.body) } : {}),
+    })
+  }
+
+  private discoverCachedAampService(): Promise<AampDiscoveryDocument> {
+    if (!this.discoveryPromise) {
+      const discoveryPromise = AampClient.discoverAampService(this.config.baseUrl, this.config.fetch)
+      this.discoveryPromise = discoveryPromise
+      void discoveryPromise.catch(() => {
+        if (this.discoveryPromise === discoveryPromise) {
+          this.discoveryPromise = undefined
+        }
+      })
+    }
+    return this.discoveryPromise
+  }
+
+  private async callAampApi(opts: {
+    action: string
+    method?: 'GET' | 'POST'
+    query?: Record<string, string | number | boolean | undefined>
+    body?: unknown
+    authToken?: string
+  }): Promise<Response> {
+    const fetchImpl = this.config.fetch ?? fetch
+    const discovery = await this.discoverCachedAampService()
+    const base = this.config.baseUrl.replace(/\/$/, '')
+    const apiUrl = new URL(discovery.api!.url!, `${base}/`)
+    apiUrl.searchParams.set('action', opts.action)
+    for (const [key, value] of Object.entries(opts.query ?? {})) {
+      if (value == null) continue
+      apiUrl.searchParams.set(key, String(value))
+    }
+    return fetchImpl(apiUrl, {
+      method: opts.method ?? 'GET',
+      headers: {
+        ...(opts.authToken ? { Authorization: `Basic ${opts.authToken}` } : {}),
+        ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
     })
   }
 
@@ -344,6 +431,26 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       mailboxToken: creds.mailbox.token,
       smtpPassword: creds.smtp.password,
       baseUrl: base,
+    }
+  }
+
+  static async checkMailbox(opts: {
+    aampHost: string
+    email: string
+  }): Promise<{ aamp: boolean; domain?: string }> {
+    const base = opts.aampHost.replace(/\/$/, '')
+    const res = await AampClient.callDiscoveredApi(base, {
+      action: 'aamp.mailbox.check',
+      query: { email: opts.email },
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`Mailbox check failed: ${res.status} ${body || res.statusText}`)
+    }
+    const payload = await res.json() as { aamp?: boolean; domain?: string }
+    return {
+      aamp: Boolean(payload.aamp),
+      ...(payload.domain ? { domain: payload.domain } : {}),
     }
   }
 
@@ -434,6 +541,14 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
     return this.smtpSender.sendStreamOpened(opts)
   }
 
+  async sendPairRequest(opts: SendPairRequestOptions): Promise<{ taskId: string; messageId: string }> {
+    return this.smtpSender.sendPairRequest(opts)
+  }
+
+  async sendPairRespond(opts: SendPairRespondOptions): Promise<void> {
+    return this.smtpSender.sendPairRespond(opts)
+  }
+
   async sendCardQuery(opts: SendCardQueryOptions): Promise<{ taskId: string; messageId: string }> {
     return this.smtpSender.sendCardQuery(opts)
   }
@@ -449,6 +564,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       action: 'aamp.directory.upsert',
       method: 'POST',
       authToken: mailboxToken,
+      fetch: this.config.fetch,
       body: opts,
     })
     if (!res.ok) {
@@ -465,6 +581,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
     const res = await AampClient.callDiscoveredApi(base, {
       action: 'aamp.directory.list',
       authToken: mailboxToken,
+      fetch: this.config.fetch,
       query: {
         scope: opts.scope,
         includeSelf: opts.includeSelf,
@@ -485,6 +602,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
     const res = await AampClient.callDiscoveredApi(base, {
       action: 'aamp.directory.search',
       authToken: mailboxToken,
+      fetch: this.config.fetch,
       query: {
         q: opts.query,
         scope: opts.scope,
@@ -506,6 +624,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
     const res = await AampClient.callDiscoveredApi(base, {
       action: 'aamp.mailbox.thread',
       authToken: mailboxToken,
+      fetch: this.config.fetch,
       query: {
         taskId,
         includeStreamOpened: opts.includeStreamOpened,
@@ -533,7 +652,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
   }
 
   private async resolveStreamCapability(): Promise<NonNullable<NonNullable<AampDiscoveryDocument['capabilities']>['stream']>> {
-    const discovery = await AampClient.discoverAampService(this.config.baseUrl)
+    const discovery = await this.discoverCachedAampService()
     const stream = discovery.capabilities?.stream
     if (!stream?.transport) {
       throw new Error('AAMP stream capability is not available on this service')
@@ -543,7 +662,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
 
   async createStream(opts: CreateStreamOptions): Promise<CreateStreamResult> {
     const stream = await this.resolveStreamCapability()
-    const res = await AampClient.callDiscoveredApi(this.config.baseUrl, {
+    const res = await this.callAampApi({
       action: stream.createAction ?? 'aamp.stream.create',
       method: 'POST',
       authToken: this.config.mailboxToken,
@@ -604,7 +723,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
     payload: Record<string, unknown>
   }): Promise<AampStreamEvent> {
     const stream = await this.resolveStreamCapability()
-    const res = await AampClient.callDiscoveredApi(this.config.baseUrl, {
+    const res = await this.callAampApi({
       action: stream.appendAction ?? 'aamp.stream.append',
       method: 'POST',
       authToken: this.config.mailboxToken,
@@ -721,7 +840,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
   async closeStream(opts: CloseStreamOptions): Promise<TaskStreamState> {
     await this.flushStreamAppendQueue(opts.streamId)
     const stream = await this.resolveStreamCapability()
-    const res = await AampClient.callDiscoveredApi(this.config.baseUrl, {
+    const res = await this.callAampApi({
       action: stream.closeAction ?? 'aamp.stream.close',
       method: 'POST',
       authToken: this.config.mailboxToken,
@@ -736,7 +855,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
 
   async getTaskStream(opts: GetTaskStreamOptions): Promise<TaskStreamState | null> {
     const stream = await this.resolveStreamCapability()
-    const res = await AampClient.callDiscoveredApi(this.config.baseUrl, {
+    const res = await this.callAampApi({
       action: stream.getAction ?? 'aamp.stream.get',
       authToken: this.config.mailboxToken,
       query: {
@@ -775,7 +894,8 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       opts.signal.addEventListener('abort', () => controller.abort(), { once: true })
     }
 
-    const res = await fetch(url, {
+    const fetchImpl = this.config.fetch ?? fetch
+    const res = await fetchImpl(url, {
       headers: {
         Authorization: `Basic ${this.config.mailboxToken}`,
         Accept: 'text/event-stream',

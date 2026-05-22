@@ -25,11 +25,18 @@ describe('SmtpSender', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         accounts: { acc1: { name: 'agent', isPersonal: true } },
         primaryAccounts: { 'urn:ietf:params:jmap:mail': 'acc1' },
+        uploadUrl: 'http://internal:8080/jmap/upload/{accountId}/',
       })))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         methodResponses: [
           ['Mailbox/get', { list: [{ id: 'sent-box', role: 'sent' }] }, 'mb1'],
         ],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        accountId: 'acc1',
+        blobId: 'blob-context',
+        type: 'text/plain',
+        size: Buffer.from('hello world').byteLength,
       })))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         methodResponses: [
@@ -69,12 +76,30 @@ describe('SmtpSender', () => {
     expect(payload.aampHeaders['X-AAMP-Dispatch-Context']).toContain('project_key=proj-1')
     expect(String(fetchMock.mock.calls[2][0])).toBe('https://meshmail.ai/.well-known/jmap')
     expect(String(fetchMock.mock.calls[3][0])).toBe('https://meshmail.ai/jmap/')
-    expect(String(fetchMock.mock.calls[4][0])).toBe('https://meshmail.ai/jmap/')
-    const sentPayload = JSON.parse(String(fetchMock.mock.calls[4][1]?.body))
+    expect(String(fetchMock.mock.calls[4][0])).toBe('https://meshmail.ai/jmap/upload/acc1/')
+    expect(fetchMock.mock.calls[4][1]?.headers).toEqual(expect.objectContaining({
+      'Content-Type': 'text/plain',
+    }))
+    expect(String(fetchMock.mock.calls[5][0])).toBe('https://meshmail.ai/jmap/')
+    const sentPayload = JSON.parse(String(fetchMock.mock.calls[5][1]?.body))
     expect(sentPayload.methodCalls[0][0]).toBe('Email/set')
     expect(sentPayload.methodCalls[0][1].create.sent1.mailboxIds).toEqual({ 'sent-box': true })
     expect(sentPayload.methodCalls[0][1].create.sent1.subject).toBe('[AAMP Task] Review docs')
     expect(sentPayload.methodCalls[0][1].create.sent1['header:Message-ID:asText']).toBe(' http-msg-1')
+    expect(sentPayload.methodCalls[0][1].create.sent1.textBody).toBeUndefined()
+    expect(sentPayload.methodCalls[0][1].create.sent1.bodyStructure).toEqual({
+      type: 'multipart/mixed',
+      subParts: [
+        { partId: 'body', type: 'text/plain' },
+        {
+          blobId: 'blob-context',
+          type: 'text/plain',
+          size: Buffer.from('hello world').byteLength,
+          name: 'context.txt',
+          disposition: 'attachment',
+        },
+      ],
+    })
   })
 
   it('uses SMTP for external recipients', async () => {
@@ -148,5 +173,66 @@ describe('SmtpSender', () => {
         'X-AAMP-Card-Summary': 'Reviews code and summarizes incidents',
       }),
     }))
+  })
+
+  it('builds pair.respond messages with status and failure reason', async () => {
+    const { SmtpSender } = await import('../src/smtp-sender.js')
+    const sender = new SmtpSender({
+      host: 'meshmail.ai',
+      port: 587,
+      user: 'agent@meshmail.ai',
+      password: 'smtp-1',
+    })
+
+    fakeTransport.sendMail.mockResolvedValueOnce({ messageId: 'pair-response-msg-1' })
+    await sender.sendPairRespond({
+      to: 'app@example.com',
+      taskId: 'pair-5',
+      success: false,
+      reason: 'invalid or expired pair code',
+      inReplyTo: '<pair-request>',
+    })
+
+    expect(fakeTransport.sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'app@example.com',
+      subject: '[AAMP Pair] rejected',
+      inReplyTo: '<pair-request>',
+      references: '<pair-request>',
+      headers: expect.objectContaining({
+        'X-AAMP-Intent': 'pair.respond',
+        'X-AAMP-TaskId': 'pair-5',
+        'X-AAMP-Status': 'rejected',
+        'X-AAMP-ErrorMsg': 'invalid or expired pair code',
+      }),
+    }))
+  })
+
+  it('retries transient HTTP fallback failures before giving up on pair.respond', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ api: { url: '/api/aamp' } })))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageId: 'pair-response-msg-2' })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { SmtpSender } = await import('../src/smtp-sender.js')
+    const sender = new SmtpSender({
+      host: 'meshmail.ai',
+      port: 587,
+      user: 'agent@meshmail.ai',
+      password: 'smtp-1',
+      httpBaseUrl: 'https://meshmail.ai',
+      authToken: Buffer.from('agent@meshmail.ai:smtp-1').toString('base64'),
+      forceHttpSend: true,
+      persistSentCopy: false,
+    })
+
+    await sender.sendPairRespond({
+      to: 'app@meshmail.ai',
+      taskId: 'pair-6',
+      success: true,
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(String(fetchMock.mock.calls[2][0])).toBe('https://meshmail.ai/api/aamp?action=aamp.mailbox.send')
   })
 })

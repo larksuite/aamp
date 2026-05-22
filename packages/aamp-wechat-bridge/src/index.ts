@@ -27,7 +27,7 @@ function printUsage(): void {
     'Usage: aamp-wechat-bridge <command> [options]',
     '',
     'Commands:',
-    '  init      Create or update local bridge config and AAMP mailbox credentials',
+    '  init      Create or update local bridge config, login with QR code, then start',
     '  login     Start QR login and persist the WeChat bot token locally',
     '  start     Start the local WeChat bridge daemon',
     '  run       Alias for start',
@@ -35,6 +35,8 @@ function printUsage(): void {
     '',
     'Options:',
     '  --config-dir <path>   Override bridge config directory',
+    '  --pairing-url <url>   Pair with an AAMP Agent URL during init',
+    '  --no-start            Only write config; skip QR login and start',
     '',
     'Examples:',
     '  aamp-wechat-bridge init',
@@ -190,7 +192,16 @@ async function handleInit(configDir?: string, options: Record<string, string | b
   const config = await initializeBridgeConfig({
     configDir,
     aampHost: typeof options.aampHost === 'string' ? options.aampHost : undefined,
-    targetAgentEmail: typeof options.targetAgentEmail === 'string' ? options.targetAgentEmail : undefined,
+    targetAgentEmail: typeof options.targetAgentEmail === 'string'
+      ? options.targetAgentEmail
+      : typeof options['target-agent'] === 'string'
+        ? options['target-agent']
+        : undefined,
+    pairingUrl: typeof options.pairingUrl === 'string'
+      ? options.pairingUrl
+      : typeof options['pairing-url'] === 'string'
+        ? options['pairing-url']
+        : undefined,
     slug: typeof options.slug === 'string' ? options.slug : undefined,
     summary: typeof options.summary === 'string' ? options.summary : undefined,
     botAgent: typeof options.botAgent === 'string' ? options.botAgent : undefined,
@@ -201,6 +212,16 @@ async function handleInit(configDir?: string, options: Record<string, string | b
   console.log(`Bridge config saved to ${getBridgeHomeDir(configDir)}/config.json`)
   console.log(`Mailbox: ${config.mailbox.email}`)
   console.log(`Target agent: ${config.targetAgentEmail}`)
+  if (options['no-start'] === true) {
+    console.log('Bridge not started because --no-start was provided.')
+    return
+  }
+
+  const state = await loadBridgeState(configDir)
+  const nextState = await waitForQrLogin(config, state)
+  await saveBridgeState(nextState, configDir)
+  console.log(`微信登录成功，账号标识: ${nextState.account?.accountId ?? 'default'}`)
+  await handleRun(configDir)
 }
 
 async function handleLogin(configDir?: string): Promise<void> {

@@ -51,6 +51,19 @@ export interface SenderPolicyConfig {
   allowFrom: string[]
   allowCommands: string[]
   requireContext: Record<string, string>
+  pairedSenders: Array<{
+    sender: string
+    dispatchContextRules: Record<string, string[]>
+    pairedAt: string
+  }>
+}
+
+export interface NodePairingConfig {
+  mailbox: string
+  pairCode: string
+  expiresAt: string
+  connectUrl: string
+  consumedAt?: string
 }
 
 export interface NodeConfig {
@@ -58,6 +71,7 @@ export interface NodeConfig {
   mailbox: NodeMailboxConfig
   commands: RegisteredCommand[]
   senderPolicy: SenderPolicyConfig
+  pairing?: NodePairingConfig
 }
 
 export const DEFAULT_NODE_NAME = 'default'
@@ -70,6 +84,7 @@ const DEFAULT_CONFIG: Omit<NodeConfig, 'mailbox'> = {
     allowFrom: [],
     allowCommands: [],
     requireContext: {},
+    pairedSenders: [],
   },
 }
 
@@ -105,7 +120,17 @@ function normalizeNodeConfig(raw: NodeConfig): NodeConfig {
       allowFrom: Array.isArray(raw.senderPolicy?.allowFrom) ? raw.senderPolicy.allowFrom : [],
       allowCommands: Array.isArray(raw.senderPolicy?.allowCommands) ? raw.senderPolicy.allowCommands : [],
       requireContext: raw.senderPolicy?.requireContext ?? {},
+      pairedSenders: Array.isArray(raw.senderPolicy?.pairedSenders)
+        ? raw.senderPolicy.pairedSenders
+            .filter((item) => item?.sender)
+            .map((item) => ({
+              sender: item.sender.trim().toLowerCase(),
+              dispatchContextRules: item.dispatchContextRules ?? {},
+              pairedAt: item.pairedAt,
+            }))
+        : [],
     },
+    ...(raw.pairing ? { pairing: raw.pairing } : {}),
   }
 }
 

@@ -4,7 +4,7 @@
     "dist"
   ],
   "license": "MIT",
-  "version": "0.1.9",
+  "version": "0.1.11",
   "description": "CLI for connecting any agent mailbox to the AAMP network via aamp-sdk",
   "type": "module",
   "main": "dist/index.js",
@@ -18,10 +18,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "aamp-sdk": "file:../sdks/nodejs"
+    "aamp-sdk": "file:../sdks/nodejs",
+    "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "@types/qrcode-terminal": "^0.12.2",
     "tsx": "^4.7.1",
     "typescript": "^5.4.3",
     "vitest": "^1.6.1"

@@ -4,7 +4,7 @@
     "dist"
   ],
   "license": "MIT",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Local WeChat bridge daemon that logs in with QR scan and bridges native WeChat conversations to a target AAMP agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -19,10 +19,10 @@
     "start": "./dist/index.js start"
   },
   "dependencies": {
+    "aamp-sdk": "file:../sdks/nodejs",
     "nodemailer": "^6.9.10",
     "qrcode-terminal": "^0.12.0",
-    "ws": "^8.16.0",
-    "aamp-sdk": "file:../sdks/nodejs"
+    "ws": "^8.16.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",

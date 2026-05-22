@@ -5,16 +5,19 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { randomUUID } from 'node:crypto'
 import { stdin as input, stdout as output } from 'node:process'
-import { AampClient } from 'aamp-sdk'
+import { AampClient, parsePairingUrl } from 'aamp-sdk'
 import type { BridgeConfig, BridgeMailboxIdentity, BridgeState } from './types.js'
 
 const CONFIG_FILENAME = 'config.json'
 const STATE_FILENAME = 'state.json'
+const DEFAULT_BRIDGE_SLUG = 'wechat-bridge'
+const DEFAULT_BOT_AGENT = 'AAMP-WeChat-Bridge/0.1.0'
 
 export interface InitBridgeOptions {
   configDir?: string
   aampHost?: string
   targetAgentEmail?: string
+  pairingUrl?: string
   slug?: string
   summary?: string
   botAgent?: string
@@ -102,7 +105,7 @@ function normalizeSlug(rawValue: string): string {
     .replace(/[^a-z0-9-]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 32) || 'wechat-bridge'
+    .slice(0, 32) || DEFAULT_BRIDGE_SLUG
 }
 
 async function prompt(question: string, defaultValue = ''): Promise<string> {
@@ -129,10 +132,14 @@ export async function initializeBridgeConfig(options: InitBridgeOptions): Promis
   const existing = await loadBridgeConfig(options.configDir)
 
   const aampHost = (options.aampHost ?? existing?.aampHost ?? await prompt('AAMP host', 'https://meshmail.ai')).trim()
-  const targetAgentEmail = (options.targetAgentEmail ?? existing?.targetAgentEmail ?? await prompt('Target AAMP agent email')).trim()
-  const slug = normalizeSlug(options.slug ?? existing?.slug ?? await prompt('Bridge mailbox slug', 'wechat-bridge'))
+  const targetInput = (options.pairingUrl ?? options.targetAgentEmail ?? existing?.targetAgentEmail ?? await prompt('Target AAMP agent email or pairing URL')).trim()
+  const pairing = targetInput.startsWith('aamp://')
+    ? parsePairingUrl(targetInput)
+    : undefined
+  const targetAgentEmail = pairing?.mailbox ?? targetInput
+  const slug = normalizeSlug(options.slug ?? existing?.slug ?? DEFAULT_BRIDGE_SLUG)
   const summary = (options.summary ?? existing?.summary ?? '').trim() || undefined
-  const botAgent = (options.botAgent ?? existing?.wechat.botAgent ?? await prompt('WeChat bot agent', 'AAMP-WeChat-Bridge/0.1.0')).trim()
+  const botAgent = (options.botAgent ?? existing?.wechat.botAgent ?? DEFAULT_BOT_AGENT).trim()
   const dispatchTimeoutMs = Math.max(1000, Math.trunc(options.dispatchTimeoutMs ?? existing?.behavior.dispatchTimeoutMs ?? 180000))
   const pollTimeoutMs = Math.max(5000, Math.trunc(options.pollTimeoutMs ?? existing?.behavior.pollTimeoutMs ?? 35000))
 
@@ -155,7 +162,7 @@ export async function initializeBridgeConfig(options: InitBridgeOptions): Promis
     wechat: {
       apiBaseUrl: existing?.wechat.apiBaseUrl ?? 'https://ilinkai.weixin.qq.com',
       botType: existing?.wechat.botType ?? '3',
-      botAgent: botAgent || 'AAMP-WeChat-Bridge/0.1.0',
+      botAgent: botAgent || DEFAULT_BOT_AGENT,
     },
     behavior: {
       dispatchTimeoutMs,
@@ -165,5 +172,17 @@ export async function initializeBridgeConfig(options: InitBridgeOptions): Promis
 
   await ensureBridgeHomeDir(options.configDir)
   await saveBridgeConfig(config, options.configDir)
+  if (pairing) {
+    const client = AampClient.fromMailboxIdentity({
+      email: config.mailbox.email,
+      smtpPassword: config.mailbox.smtpPassword,
+      baseUrl: config.mailbox.baseUrl,
+    })
+    await client.sendPairRequest({
+      to: pairing.mailbox,
+      pairCode: pairing.pairCode,
+      dispatchContextRules: pairing.dispatchContextRules ?? { source: ['wechat'] },
+    })
+  }
   return config
 }

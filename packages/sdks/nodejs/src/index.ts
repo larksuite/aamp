@@ -17,6 +17,8 @@ export {
   buildHelpHeaders,
   buildAckHeaders,
   buildStreamOpenedHeaders,
+  buildPairRequestHeaders,
+  buildPairRespondHeaders,
   buildCardQueryHeaders,
   buildCardResponseHeaders,
   parseDispatchContextHeader,
@@ -25,6 +27,17 @@ export {
 export { JmapPushClient } from './jmap-push.js'
 export { SmtpSender, deriveMailboxServiceDefaults } from './smtp-sender.js'
 export { renderThreadHistoryForAgent } from './thread.js'
+export {
+  buildPairingUrl,
+  consumePairingCode,
+  createPairedSenderPolicy,
+  createPairingCode,
+  isPairingUrl,
+  matchPairedSenderPolicy,
+  normalizeDispatchContextRules,
+  parsePairingUrl,
+  upsertPairedSenderPolicy,
+} from './pairing.js'
 
 // Types
 export type {
@@ -39,6 +52,8 @@ export type {
   TaskHelp,
   TaskAck,
   TaskStreamOpened,
+  PairRequest,
+  PairRespond,
   CardQuery,
   CardResponse,
   HumanReply,
@@ -70,6 +85,8 @@ export type {
   SendCancelOptions,
   SendResultOptions,
   SendHelpOptions,
+  SendPairRequestOptions,
+  SendPairRespondOptions,
   SendCardQueryOptions,
   SendCardResponseOptions,
   GetTaskStreamOptions,
@@ -78,5 +95,14 @@ export type {
   TaskThreadHistory,
   UpdateDirectoryProfileOptions,
 } from './types.js'
+export type {
+  ConsumePairingCodeOptions,
+  CreatePairingCodeOptions,
+  DispatchContextRules,
+  PairingCode,
+  PairingUrlPayload,
+  PairableSenderLike,
+  PairedSenderPolicy,
+} from './pairing.js'
 
 export { AAMP_HEADER, AAMP_PROTOCOL_VERSION } from './types.js'

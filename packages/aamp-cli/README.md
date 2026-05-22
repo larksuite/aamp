@@ -1,12 +1,12 @@
 # aamp-cli
 
-Command-line mailbox client for AAMP, built on top of [aamp-sdk](../sdks/nodejs/README.md).
+Command-line mailbox client for AAMP, built on top of [aamp-sdk](../sdk/README.md).
 
 ## What it does
 
 - Connect an arbitrary mailbox identity to AAMP from the terminal
 - Listen for `task.dispatch`, `task.cancel`, `task.help_needed`, `task.result`, `task.ack`, `card.query`, `card.response`, and human replies
-- Send `task.dispatch`, `task.cancel`, `task.help_needed`, `task.result`, `card.query`, and `card.response`
+- Send `task.dispatch`, `task.cancel`, `task.help_needed`, `task.result`, `pair.request`, `pair.respond`, `card.query`, and `card.response`
 - Manage an AAMP agent directory profile and search cooperating agents
 - Store reusable mailbox profiles under `~/.aamp/cli/profiles/`
 
@@ -65,8 +65,44 @@ aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--priority urgent|high|
 aamp-cli cancel --to EMAIL --task-id ID [--body TEXT]
 aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TEXT] [--error TEXT]
 aamp-cli help --to EMAIL --task-id ID --question TEXT [--reason TEXT] [--option TEXT]...
+aamp-cli pair --url AAMP_PAIRING_URL [--profile NAME] [--dispatch-context-rule KEY=VALUE[,VALUE]...]
+aamp-cli pair --mailbox EMAIL --pair-code CODE [--profile NAME] [--dispatch-context-rule KEY=VALUE[,VALUE]...]
+aamp-cli pair EMAIL CODE [--profile NAME]
 aamp-cli card-query --to EMAIL [--body TEXT]
 aamp-cli card-response --to EMAIL --task-id ID --summary TEXT [--body TEXT] [--card-file PATH]
+aamp-cli node init [--node NAME] [--no-start]
+aamp-cli node pair [--node NAME] [--no-start]
+aamp-cli node serve [--node NAME]
 ```
 
-`aamp-cli status` validates the saved profile, verifies SMTP, and reports whether the mailbox client is connected through WebSocket push or polling fallback.
+`aamp-cli status` only checks whether `/.well-known/aamp` is available and returns a valid AAMP discovery document. It does not verify SMTP or require a live WebSocket connection.
+
+## Pairing
+
+Consume a pairing URL from another Agent or bridge:
+
+```bash
+aamp-cli pair --url "aamp://connect?mailbox=agent@meshmail.ai&pair_code=abc123"
+aamp-cli pair --mailbox agent@meshmail.ai --pair-code abc123
+aamp-cli pair agent@meshmail.ai abc123
+```
+
+Nodes answer every inbound `pair.request` with `pair.respond`; success uses
+`X-AAMP-Status: completed`, while failures use `rejected` plus
+`X-AAMP-ErrorMsg`.
+
+Expose a local registered-command node and print a fresh pairing URL plus
+terminal QR code:
+
+```bash
+aamp-cli node init --node worker
+aamp-cli node pair --node worker
+```
+
+`node init` and `node pair` start the node immediately after printing the QR
+code so scanned `pair.request` mail can be received right away. Use
+`--no-start` for scripts that only want to write config or print a code.
+
+The receiver validates the one-time `pair_code`, stores this profile or node as
+an allowed sender, and consumes the code. URLs usually expire after five
+minutes.

@@ -8,10 +8,15 @@ import { stdin as input, stdout as output, stderr } from 'node:process'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { AampClient } from 'aamp-sdk'
 
 const PLUGIN_ID = 'aamp-openclaw-plugin'
 const DEFAULT_AAMP_HOST = 'https://meshmail.ai'
 const DEFAULT_CREDENTIALS_FILE = '~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json'
+const DEFAULT_PAIRING_FILE = '~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json'
+const DEFAULT_SENDER_POLICIES_FILE = '~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json'
+export const MIN_OPENCLAW_VERSION = '2026.3.22'
+export const MIN_OPENCLAW_VERSION_RANGE = `>=${MIN_OPENCLAW_VERSION}`
 const CODING_TOOL_ALLOWLIST = [
   'read',
   'write',
@@ -39,6 +44,7 @@ const AAMP_PLUGIN_TOOL_ALLOWLIST = [
   'aamp_send_result',
   'aamp_send_help',
   'aamp_pending_tasks',
+  'aamp_pairing_code',
   'aamp_cancel_task',
   'aamp_dispatch_task',
   'aamp_check_protocol',
@@ -178,9 +184,124 @@ export function writeJsonFile(path, value) {
   writeFileSync(path, JSON.stringify(value, null, 2) + '\n', 'utf-8')
 }
 
+async function renderTerminalQr(value) {
+  try {
+    const qrcode = await import('qrcode-terminal')
+    const generator = qrcode.default?.generate ?? qrcode.generate
+    if (!generator) return ''
+    return await new Promise((resolve) => {
+      generator(value, { small: true }, (qr) => resolve(qr))
+    })
+  } catch {
+    return ''
+  }
+}
+
 export function normalizeBaseUrl(url) {
   if (url.startsWith('http://') || url.startsWith('https://')) return url.replace(/\/$/, '')
   return `https://${url.replace(/\/$/, '')}`
+}
+
+export function parseOpenClawVersion(outputText) {
+  const match = String(outputText ?? '').match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b/)
+  return match?.[1] ?? null
+}
+
+function parseVersionParts(version) {
+  const [withoutBuild] = String(version ?? '').split('+', 1)
+  const prereleaseIndex = withoutBuild.indexOf('-')
+  const core = prereleaseIndex === -1 ? withoutBuild : withoutBuild.slice(0, prereleaseIndex)
+  const prereleaseText = prereleaseIndex === -1 ? '' : withoutBuild.slice(prereleaseIndex + 1)
+  const numbers = core.split('.').map((part) => Number(part))
+  if (numbers.length !== 3 || numbers.some((part) => !Number.isInteger(part) || part < 0)) {
+    return null
+  }
+  const prerelease = prereleaseText ? prereleaseText.split('.') : []
+  return { numbers, prerelease }
+}
+
+function comparePrereleaseIdentifier(left, right) {
+  const leftNumeric = /^\d+$/.test(left)
+  const rightNumeric = /^\d+$/.test(right)
+  if (leftNumeric && rightNumeric) return Number(left) - Number(right)
+  if (leftNumeric) return -1
+  if (rightNumeric) return 1
+  return left.localeCompare(right)
+}
+
+export function compareOpenClawVersions(leftVersion, rightVersion) {
+  const left = parseVersionParts(leftVersion)
+  const right = parseVersionParts(rightVersion)
+  if (!left || !right) {
+    throw new Error(`Invalid OpenClaw version comparison: ${leftVersion} vs ${rightVersion}`)
+  }
+
+  for (let idx = 0; idx < 3; idx += 1) {
+    const diff = left.numbers[idx] - right.numbers[idx]
+    if (diff !== 0) return diff
+  }
+
+  if (left.prerelease.length === 0 && right.prerelease.length === 0) return 0
+  if (left.prerelease.length === 0) return 1
+  if (right.prerelease.length === 0) return -1
+
+  const maxLength = Math.max(left.prerelease.length, right.prerelease.length)
+  for (let idx = 0; idx < maxLength; idx += 1) {
+    const leftPart = left.prerelease[idx]
+    const rightPart = right.prerelease[idx]
+    if (leftPart === undefined) return -1
+    if (rightPart === undefined) return 1
+    const diff = comparePrereleaseIdentifier(leftPart, rightPart)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
+export function checkOpenClawVersion(currentVersion, minimumVersion = MIN_OPENCLAW_VERSION) {
+  const comparison = compareOpenClawVersions(currentVersion, minimumVersion)
+  return {
+    ok: comparison >= 0,
+    currentVersion,
+    minimumVersion,
+    range: `>=${minimumVersion}`,
+  }
+}
+
+export function getCurrentOpenClawVersion() {
+  const result = spawnSync('openclaw', ['--version'], {
+    encoding: 'utf-8',
+  })
+
+  if (result.error) {
+    throw new Error(
+      `OpenClaw CLI was not found. Install OpenClaw ${MIN_OPENCLAW_VERSION_RANGE} or newer before installing ${PLUGIN_ID}.`,
+    )
+  }
+
+  if (result.status !== 0) {
+    const reason = (result.stderr || result.stdout || `exit code ${result.status}`).trim()
+    throw new Error(`Could not detect OpenClaw version: ${reason}`)
+  }
+
+  const version = parseOpenClawVersion(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
+  if (!version) {
+    throw new Error(`Could not parse OpenClaw version from: ${(result.stdout || result.stderr || '').trim()}`)
+  }
+  return version
+}
+
+export function assertOpenClawVersionSupported(currentVersion = getCurrentOpenClawVersion()) {
+  const check = checkOpenClawVersion(currentVersion)
+  if (check.ok) return check
+
+  throw new Error(
+    [
+      `${PLUGIN_ID} requires OpenClaw ${check.range}.`,
+      `Detected OpenClaw ${check.currentVersion}.`,
+      'Please upgrade OpenClaw, then rerun this installer.',
+      'Example: npm install -g openclaw@latest',
+    ].join('\n'),
+  )
 }
 
 export function ensurePluginConfig(config, pluginConfig, options = {}) {
@@ -446,50 +567,15 @@ export async function ensureMailboxIdentity({ aampHost, slug, credentialsFile })
     }
   }
 
-  const base = normalizeBaseUrl(aampHost)
-  const discoveryRes = await fetch(`${base}/.well-known/aamp`)
-  if (!discoveryRes.ok) {
-    const text = await discoveryRes.text().catch(() => '')
-    throw new Error(`AAMP discovery failed (${discoveryRes.status}): ${text || discoveryRes.statusText}`)
-  }
-  const discovery = await discoveryRes.json()
-  const apiUrl = discovery?.api?.url
-  if (!apiUrl) {
-    throw new Error('AAMP discovery did not return api.url')
-  }
-  const apiBase = new URL(apiUrl, `${base}/`).toString()
-
-  const registerRes = await fetch(`${apiBase}?action=aamp.mailbox.register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      slug,
-      description: 'OpenClaw AAMP agent node',
-    }),
+  const credData = await AampClient.registerMailbox({
+    aampHost: normalizeBaseUrl(aampHost),
+    slug,
+    description: 'OpenClaw AAMP agent node',
   })
-
-  if (!registerRes.ok) {
-    const text = await registerRes.text().catch(() => '')
-    throw new Error(`AAMP self-register failed (${registerRes.status}): ${text || registerRes.statusText}`)
-  }
-
-  const registerData = await registerRes.json()
-  const code = registerData?.registrationCode
-  if (!code) {
-    throw new Error('AAMP self-register succeeded but no registrationCode was returned')
-  }
-
-  const credRes = await fetch(`${apiBase}?action=aamp.mailbox.credentials&code=${encodeURIComponent(code)}`)
-  if (!credRes.ok) {
-    const text = await credRes.text().catch(() => '')
-    throw new Error(`AAMP credential exchange failed (${credRes.status}): ${text || credRes.statusText}`)
-  }
-
-  const credData = await credRes.json()
   const identity = {
     email: credData?.email,
-    mailboxToken: credData?.mailbox?.token ?? credData?.jmap?.token,
-    smtpPassword: credData?.smtp?.password,
+    mailboxToken: credData?.mailboxToken,
+    smtpPassword: credData?.smtpPassword,
   }
 
   if (!identity.email || !identity.mailboxToken || !identity.smtpPassword) {
@@ -498,6 +584,18 @@ export async function ensureMailboxIdentity({ aampHost, slug, credentialsFile })
 
   writeJsonFile(resolvedCreds, identity)
   return { created: true, email: identity.email, credentialsPath: resolvedCreds }
+}
+
+export function createPairingFile({ email, pairingFile }) {
+  if (!email) return null
+  const pairing = AampClient.createPairingCode({ mailbox: email })
+  writeJsonFile(expandHome(pairingFile), {
+    mailbox: pairing.mailbox,
+    pairCode: pairing.pairCode,
+    expiresAt: pairing.expiresAt,
+    connectUrl: pairing.connectUrl,
+  })
+  return pairing
 }
 
 function printHelp() {
@@ -514,6 +612,7 @@ function printHelp() {
 }
 
 export async function runInit() {
+  const openClawVersionCheck = assertOpenClawVersionSupported()
   const configPath = resolveOpenClawConfigPath()
   const existing = readJsonFile(configPath)
   const previousEntry = existing?.plugins?.entries?.[PLUGIN_ID] ?? existing?.plugins?.entries?.aamp
@@ -536,6 +635,7 @@ export async function runInit() {
     const rl = createInterface({ input, output })
     try {
       output.write('AAMP OpenClaw Plugin Setup\n\n')
+      output.write(`Detected OpenClaw ${openClawVersionCheck.currentVersion} (${MIN_OPENCLAW_VERSION_RANGE} required)\n\n`)
 
       if (previousConfig) {
         output.write(
@@ -543,7 +643,7 @@ export async function runInit() {
             'Detected existing plugin config:',
             `  aampHost: ${previousConfig.aampHost ?? DEFAULT_AAMP_HOST}`,
             `  slug: ${previousConfig.slug ?? 'openclaw-agent'}`,
-            `  senderPolicies: ${previousConfig.senderPolicies ? JSON.stringify(previousConfig.senderPolicies) : '(allow all)'}`,
+            `  senderPolicies: ${previousConfig.senderPolicies ? JSON.stringify(previousConfig.senderPolicies) : '(default deny until paired or configured)'}`,
             '',
           ].join('\n'),
         )
@@ -556,7 +656,7 @@ export async function runInit() {
         aampHost = aampHostAnswer.trim() || aampHost
 
         const senderAnswer = await rl.question(
-          'Primary trusted dispatch sender (e.g. meegle-bot@meshmail.ai, leave blank to allow all): ',
+          'Primary trusted dispatch sender (e.g. meegle-bot@meshmail.ai, leave blank to pair later): ',
         )
         const sender = senderAnswer.trim()
         if (sender) {
@@ -622,6 +722,8 @@ export async function runInit() {
     aampHost,
     slug,
     credentialsFile: DEFAULT_CREDENTIALS_FILE,
+    pairingFile: DEFAULT_PAIRING_FILE,
+    senderPoliciesFile: DEFAULT_SENDER_POLICIES_FILE,
     ...(senderPolicies ? { senderPolicies } : {}),
   }, {
     includeCodingBaseline,
@@ -648,6 +750,10 @@ export async function runInit() {
     slug,
     credentialsFile: DEFAULT_CREDENTIALS_FILE,
   })
+  const pairing = identityResult.email
+    ? createPairingFile({ email: identityResult.email, pairingFile: DEFAULT_PAIRING_FILE })
+    : null
+  const qr = pairing ? await renderTerminalQr(pairing.connectUrl) : ''
 
   const restartResult = restartGateway()
 
@@ -663,7 +769,9 @@ export async function runInit() {
       `  channels.aamp.enabled: ${next.channels?.aamp?.enabled === true ? 'true' : 'false'}`,
       `  aampHost: ${aampHost}`,
       `  credentialsFile: ${DEFAULT_CREDENTIALS_FILE}`,
-      `  senderPolicies: ${senderPolicies ? JSON.stringify(senderPolicies) : '(allow all)'}`,
+      `  pairingFile: ${DEFAULT_PAIRING_FILE}`,
+      `  senderPoliciesFile: ${DEFAULT_SENDER_POLICIES_FILE}`,
+      `  senderPolicies: ${senderPolicies ? JSON.stringify(senderPolicies) : '(default deny until paired or configured)'}`,
       `  tools.allow: ${JSON.stringify(next.tools?.allow ?? [])}`,
       `  codingBaselineAdded: ${toolPolicyPlan.missingCodingTools.length > 0 && includeCodingBaseline ? 'yes' : 'no'}`,
       identityResult.created
@@ -678,6 +786,8 @@ export async function runInit() {
       restartResult.ok
         ? 'Plugin changes should now be active.'
         : 'Please restart the OpenClaw gateway manually for the plugin changes to take effect.',
+      pairing ? `Pairing URL (expires ${pairing.expiresAt}): ${pairing.connectUrl}` : '',
+      qr ? `\n${qr}` : '',
       '',
     ].join('\n'),
   )

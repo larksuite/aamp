@@ -4,7 +4,7 @@ Profile-driven bridge for direct CLI agents that do not speak ACP.
 
 `aamp-cli-bridge` turns command-line agents into AAMP mailbox participants. It receives `task.dispatch` mail, renders the task into a CLI prompt, runs the configured command, streams incremental output when the CLI provides it, and sends the final `task.result` or `task.help_needed` back to the same AAMP thread.
 
-Use it for agents whose public surface is a command such as `claude`, `codex`, `gemini`, `codem`, or a private in-house CLI.
+Use it for agents whose public surface is a command such as `claude`, `codex`, `coco`, `gemini`, `codem`, or a private in-house CLI.
 
 ## Install
 
@@ -27,16 +27,37 @@ The normal flow is:
 ```bash
 npx aamp-cli-bridge profile-maker
 npx aamp-cli-bridge init
-npx aamp-cli-bridge start
 ```
 
 `profile-maker` creates or updates a user profile for a custom CLI agent. Built-in profiles do not need this step.
 
 `init` is repeatable. It scans built-in profiles, user-created profiles, profiles already present in the config file, and already configured agents. The prompt is a multi-select list: use arrow keys to move, Space to select, and Enter to confirm. Agents that were configured previously stay selected by default, so you can rerun `init` to add a new agent without losing existing ones.
 
-When configuring `senderPolicies`, `init` first asks whether to reuse an existing policy when one is already available for that agent. New agents can also reuse the `senderPolicies` from another configured agent before entering a new policy by hand.
+After writing config and printing any requested QR code, `init` starts the
+bridge immediately so scanned `pair.request` mail is live without a separate
+command. Use `npx aamp-cli-bridge init --no-start` when you only want to write
+config.
 
-`start` loads the config, provisions or reuses each agent mailbox, listens for `task.dispatch`, and forwards work into the matching CLI command.
+For every selected agent, `init` asks you to choose one authorization setup
+method: pair with a five-minute QR code / `aamp://connect?...` URL, manually
+enter `senderPolicies`, reuse existing `senderPolicies` when available, or configure sender authorization later. The
+later option rejects `task.dispatch` until pairing or policy setup is complete. If you
+choose QR pairing, scan it with AAMP App or paste it into User UI /
+`aamp-cli pair` to authorize that sender without manually editing
+`senderPolicies`. Every `pair.request` is answered with `pair.respond` so the
+requester can tell whether pairing succeeded or why it failed.
+
+After an agent has been initialized, generate a fresh pairing QR code without
+re-running setup:
+
+```bash
+npx aamp-cli-bridge pair --agent codex
+```
+
+`pair` also starts that agent by default after printing the QR code. Use
+`--no-start` if you only need the URL.
+
+`start` is still available for existing configs; it loads the config, provisions or reuses each agent mailbox, listens for `task.dispatch`, and forwards work into the matching CLI command.
 
 ## Storage
 
@@ -44,6 +65,8 @@ Default paths:
 
 - Config: `~/.aamp/cli-bridge/config.json`
 - Agent credentials: `~/.aamp/cli-bridge/credentials/<agent>.json`
+- Agent pairing codes: `~/.aamp/cli-bridge/pairing/<agent>.json`
+- Paired sender policies: `~/.aamp/cli-bridge/sender-policies/<agent>.json`
 - User profiles: `~/.aamp/cli-bridge/profiles/<profile>.json`
 
 `init` writes the main config and credentials. `profile-maker` writes user profile JSON files. You can also pass a config path to commands that support it:
@@ -59,7 +82,7 @@ A CLI profile describes how to invoke an agent and how to interpret its output.
 
 Profiles can come from four places:
 
-- Built-in profiles shipped by the bridge: `claude`, `codex`, `gemini`, and `codem`
+- Built-in profiles shipped by the bridge: `claude`, `codex`, `coco`, `gemini`, and `codem`
 - User profiles in `~/.aamp/cli-bridge/profiles/*.json`
 - Shared top-level `profiles` in the bridge config
 - Inline `cliProfile` objects on a specific agent config
@@ -79,7 +102,7 @@ When an agent uses an inline `cliProfile` object, that object is used directly f
   "name": "codem",
   "description": "Codem SSE mode.",
   "command": "codem",
-  "args": ["-p", "{{prompt}}", "--sse"],
+  "args": ["-p", "{{prompt}}", "--sse", "--yolo"],
   "stdin": null,
   "env": {
     "MY_AGENT_MODE": "aamp"
@@ -156,7 +179,7 @@ SSE stream:
 {
   "name": "codem",
   "command": "codem",
-  "args": ["-p", "{{prompt}}", "--sse"],
+  "args": ["-p", "{{prompt}}", "--sse", "--yolo"],
   "stream": {
     "format": "sse"
   },
@@ -208,7 +231,9 @@ Minimal config using a built-in profile:
       "name": "codex",
       "cliProfile": "codex",
       "slug": "codex-cli-bridge",
-      "credentialsFile": "~/.aamp/cli-bridge/credentials/codex.json"
+      "credentialsFile": "~/.aamp/cli-bridge/credentials/codex.json",
+      "pairingFile": "~/.aamp/cli-bridge/pairing/codex.json",
+      "senderPoliciesFile": "~/.aamp/cli-bridge/sender-policies/codex.json"
     }
   ]
 }
@@ -254,7 +279,7 @@ Shared top-level profile:
 }
 ```
 
-`senderPolicies` is optional. When configured, the bridge only accepts dispatches from matching sender mailboxes and can enforce exact-match `X-AAMP-Dispatch-Context` values:
+`senderPolicies` is optional, but omitted policies do not authorize anyone by default. Use QR pairing or configure at least one policy before sending `task.dispatch`; matching policies can also enforce exact-match `X-AAMP-Dispatch-Context` values:
 
 ```json
 {
@@ -288,8 +313,9 @@ The CLI agent can use these plain-output conventions:
 ## Commands
 
 ```bash
-npx aamp-cli-bridge init
+npx aamp-cli-bridge init [--no-start]
 npx aamp-cli-bridge start [--config X]
+npx aamp-cli-bridge pair --agent NAME [--config X] [--no-start]
 npx aamp-cli-bridge list [--config X]
 npx aamp-cli-bridge status
 npx aamp-cli-bridge profile-list

@@ -61,7 +61,7 @@ function printUsage(): void {
   console.log(`AAMP Feishu Bridge
 
 Usage:
-  aamp-feishu-bridge init [--config-dir DIR] [--aamp-host URL] [--target-agent EMAIL] [--app-id ID] [--app-secret SECRET] [--slug NAME] [--domain DOMAIN]
+  aamp-feishu-bridge init [--config-dir DIR] [--aamp-host URL] [--target-agent EMAIL|--pairing-url URL] [--app-id ID] [--app-secret SECRET] [--slug NAME] [--domain DOMAIN] [--no-start]
   aamp-feishu-bridge start [--config-dir DIR]
   aamp-feishu-bridge status [--config-dir DIR] [--json]
 
@@ -77,6 +77,7 @@ async function runInit(args: ParsedArgs): Promise<void> {
     configDir,
     aampHost: firstArg(args, 'aamp-host'),
     targetAgentEmail: firstArg(args, 'target-agent'),
+    pairingUrl: firstArg(args, 'pairing-url'),
     appId: firstArg(args, 'app-id'),
     appSecret: firstArg(args, 'app-secret'),
     slug: firstArg(args, 'slug'),
@@ -86,6 +87,11 @@ async function runInit(args: ParsedArgs): Promise<void> {
   console.log(`Initialized bridge in ${getBridgeHomeDir(configDir)}`)
   console.log(`AAMP mailbox: ${config.mailbox.email}`)
   console.log(`Target agent: ${config.targetAgentEmail}`)
+  if (args.booleans.has('no-start')) {
+    console.log('Bridge not started because --no-start was provided.')
+    return
+  }
+  await runBridge(args)
 }
 
 async function runStatus(args: ParsedArgs): Promise<void> {

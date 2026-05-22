@@ -18,6 +18,13 @@ export const BUILTIN_CLI_PROFILES: Record<string, CliProfileDefinition> = {
     args: ['exec', '--skip-git-repo-check', '{{prompt}}'],
     timeoutMs: 1_800_000,
   },
+  coco: {
+    name: 'coco',
+    description: 'Run coco agent',
+    command: 'coco',
+    args: ['-p', '{{prompt}}', '--yolo'],
+    timeoutMs: 1_800_000,
+  },
   gemini: {
     name: 'gemini',
     description: 'Gemini CLI prompt mode.',
@@ -27,9 +34,9 @@ export const BUILTIN_CLI_PROFILES: Record<string, CliProfileDefinition> = {
   },
   codem: {
     name: 'codem',
-    description: 'Codem SSE mode.',
+    description: 'Codem Bot',
     command: 'codem',
-    args: ['-p', '{{prompt}}', '--sse'],
+    args: ['-p', '{{prompt}}', '--sse', '--yolo'],
     timeoutMs: 1_800_000,
     stream: {
       format: 'sse',

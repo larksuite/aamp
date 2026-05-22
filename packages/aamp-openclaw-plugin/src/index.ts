@@ -30,7 +30,7 @@
  *   }
  *
  * Install:
- *   openclaw plugins install ./packages/aamp-openclaw-plugin
+ *   openclaw plugins install ./packages/openclaw-plugin
  */
 
 import { AampClient } from 'aamp-sdk'
@@ -42,13 +42,20 @@ import type {
   TaskHelp,
   TaskPriority,
   AampAttachment,
+  PairRequest,
   ReceivedAttachment,
 } from 'aamp-sdk'
 import { readFileSync } from 'node:fs'
 import {
+  addPairedSenderPolicy,
+  consumePairingCode,
+  createPairingCode,
   defaultCredentialsPath,
+  defaultPairingPath,
+  defaultSenderPoliciesPath,
   defaultTaskStatePath,
   ensureDir,
+  loadPairedSenderPolicies,
   loadCachedIdentity,
   loadTaskState,
   readBinaryFile,
@@ -56,6 +63,7 @@ import {
   saveTaskState,
   writeBinaryFile,
   type Identity,
+  type PairedSenderPolicy,
 } from './file-store.js'
 
 // ─── Shared runtime state (single instance per plugin lifetime) ───────────────
@@ -85,6 +93,10 @@ interface PluginConfig {
   cardFile?: string
   /** Absolute path to cache AAMP credentials. Default: ~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json */
   credentialsFile?: string
+  /** Absolute path to store the current one-time pairing code. */
+  pairingFile?: string
+  /** Absolute path to store senders approved by pair.request. */
+  senderPoliciesFile?: string
   senderPolicies?: SenderPolicy[]
 }
 
@@ -97,7 +109,7 @@ export function matchSenderPolicy(
   task: TaskDispatch,
   senderPolicies: SenderPolicy[] | undefined,
 ): { allowed: boolean; reason?: string } {
-  if (!senderPolicies?.length) return { allowed: true }
+  if (!senderPolicies?.length) return { allowed: false, reason: 'no configured senderPolicies' }
 
   const sender = task.from.toLowerCase()
   const policy = senderPolicies.find((item) => item.sender.trim().toLowerCase() === sender)
@@ -135,6 +147,59 @@ export function matchSenderPolicy(
   return { allowed: true }
 }
 
+function rulesMatch(
+  rules: Record<string, string[]> | undefined,
+  dispatchContext?: Record<string, string>,
+): boolean {
+  for (const [key, allowedValues] of Object.entries(rules ?? {})) {
+    if (!Array.isArray(allowedValues) || allowedValues.length === 0) continue
+    const observed = dispatchContext?.[key]
+    if (!observed || !allowedValues.includes(observed)) return false
+  }
+  return true
+}
+
+function matchPairedSenderPolicy(
+  task: TaskDispatch,
+  senderPolicies: PairedSenderPolicy[],
+): { allowed: boolean; reason?: string } {
+  if (senderPolicies.length === 0) return { allowed: false, reason: 'no paired sender policies configured' }
+
+  const sender = task.from.toLowerCase()
+  const policy = senderPolicies.find((item) => item.sender.trim().toLowerCase() === sender)
+  if (!policy) {
+    return { allowed: false, reason: `sender ${task.from} is not paired` }
+  }
+
+  if (!rulesMatch(policy.dispatchContextRules, task.dispatchContext)) {
+    return { allowed: false, reason: `dispatchContext does not match paired sender policy for ${task.from}` }
+  }
+
+  return { allowed: true }
+}
+
+function matchCombinedSenderPolicy(
+  task: TaskDispatch,
+  configuredPolicies: SenderPolicy[] | undefined,
+  pairedPolicies: PairedSenderPolicy[],
+): { allowed: boolean; reason?: string } {
+  const hasConfiguredPolicies = (configuredPolicies?.length ?? 0) > 0
+  const hasPairedPolicies = pairedPolicies.length > 0
+  if (!hasConfiguredPolicies && !hasPairedPolicies) {
+    return { allowed: false, reason: 'no sender policy configured' }
+  }
+
+  const configuredDecision = hasConfiguredPolicies
+    ? matchSenderPolicy(task, configuredPolicies)
+    : { allowed: false, reason: 'no configured senderPolicies' }
+  const pairedDecision = hasPairedPolicies
+    ? matchPairedSenderPolicy(task, pairedPolicies)
+    : { allowed: false, reason: 'no paired sender policies configured' }
+  if (pairedDecision.allowed) return pairedDecision
+  if (configuredDecision.allowed) return configuredDecision
+  return configuredDecision.reason ? configuredDecision : pairedDecision
+}
+
 type StructuredResultFieldInput = {
   fieldKey: string
   fieldTypeKey: string
@@ -150,6 +215,22 @@ export function baseUrl(aampHost: string): string {
     return aampHost.replace(/\/$/, '')
   }
   return `https://${aampHost}`
+}
+
+async function renderTerminalQr(value: string): Promise<string> {
+  try {
+    const qrcode = await import('qrcode-terminal') as {
+      default?: { generate: (input: string, opts: { small: boolean }, cb: (qr: string) => void) => void }
+      generate?: (input: string, opts: { small: boolean }, cb: (qr: string) => void) => void
+    }
+    const generator = qrcode.default?.generate ?? qrcode.generate
+    if (!generator) return ''
+    return await new Promise((resolve) => {
+      generator(value, { small: true }, (qr) => resolve(qr))
+    })
+  } catch {
+    return ''
+  }
 }
 
 const pendingTasks = new Map<string, PendingTask>()
@@ -185,6 +266,7 @@ let historicalReconcileCompleted = false
 let channelRuntime: any = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let channelCfg: any = null
+let pairedSenderPolicies: PairedSenderPolicy[] = []
 
 async function ensureTaskStream(task: PendingTask): Promise<string | null> {
   if (!aampClient?.isConnected()) return null
@@ -514,57 +596,16 @@ export async function registerNode(cfg: PluginConfig): Promise<Identity> {
     .toLowerCase()
     .replace(/[\s_]+/g, '-')
     .replace(/[^a-z0-9-]/g, '')
-
-  const base = baseUrl(cfg.aampHost)
-  const discoveryRes = await fetch(`${base}/.well-known/aamp`)
-  if (!discoveryRes.ok) {
-    throw new Error(`AAMP discovery failed (${discoveryRes.status}): ${discoveryRes.statusText}`)
-  }
-  const discovery = (await discoveryRes.json()) as { api?: { url?: string } }
-  const apiUrl = discovery.api?.url
-  if (!apiUrl) {
-    throw new Error('AAMP discovery did not return api.url')
-  }
-
-  const apiBase = new URL(apiUrl, `${base}/`).toString()
-
-  // Step 1: Self-register → get one-time registration code
-  const res = await fetch(`${apiBase}?action=aamp.mailbox.register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ slug, description: 'OpenClaw AAMP agent node' }),
+  const credData = await AampClient.registerMailbox({
+    aampHost: cfg.aampHost,
+    slug,
+    description: 'OpenClaw AAMP agent node',
   })
-
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(`AAMP registration failed (${res.status}): ${err.error ?? res.statusText}`)
-  }
-
-  const regData = (await res.json()) as {
-    registrationCode: string
-    email: string
-  }
-
-  // Step 2: Exchange registration code for credentials
-  const credRes = await fetch(
-    `${apiBase}?action=aamp.mailbox.credentials&code=${encodeURIComponent(regData.registrationCode)}`,
-  )
-
-  if (!credRes.ok) {
-    const err = (await credRes.json().catch(() => ({}))) as { error?: string }
-    throw new Error(`AAMP credential exchange failed (${credRes.status}): ${err.error ?? credRes.statusText}`)
-  }
-
-  const credData = (await credRes.json()) as {
-    email: string
-    mailbox: { token: string }
-    smtp: { password: string }
-  }
 
   return {
     email: credData.email,
-    mailboxToken: credData.mailbox.token,
-    smtpPassword: credData.smtp.password,
+    mailboxToken: credData.mailboxToken,
+    smtpPassword: credData.smtpPassword,
   }
 }
 
@@ -618,6 +659,18 @@ export default {
           'Absolute path to cache AAMP credentials between gateway restarts. ' +
           'Default: ~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json. ' +
           'Delete this file to force re-registration with a new mailbox.',
+      },
+      pairingFile: {
+        type: 'string',
+        description:
+          'Absolute path to store the current one-time AAMP pairing code. ' +
+          'Default: ~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json.',
+      },
+      senderPoliciesFile: {
+        type: 'string',
+        description:
+          'Absolute path to persist senders approved by pair.request. ' +
+          'Default: ~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json.',
       },
       senderPolicies: {
         type: 'array',
@@ -730,6 +783,74 @@ export default {
       api.logger.info(`[AAMP] Directory profile synced${cardText ? ' (card text registered)' : ''}`)
     }
 
+    async function sendPairResponse(request: PairRequest, success: boolean, reason?: string): Promise<void> {
+      if (!aampClient) return
+      try {
+        await aampClient.sendPairRespond({
+          to: request.from,
+          taskId: request.taskId,
+          success,
+          reason,
+          inReplyTo: request.messageId,
+        })
+      } catch (err) {
+        api.logger.warn(`[AAMP] Failed to send pair.respond to ${request.from}: ${(err as Error).message}`)
+      }
+    }
+
+    async function handlePairRequest(request: PairRequest): Promise<void> {
+      if (!agentEmail) return
+      if (request.to.trim().toLowerCase() !== agentEmail.trim().toLowerCase()) return
+
+      const senderPoliciesFile = cfg.senderPoliciesFile ?? defaultSenderPoliciesPath()
+      const consumed = consumePairingCode({
+        file: cfg.pairingFile ?? defaultPairingPath(),
+        mailbox: agentEmail,
+        pairCode: request.pairCode,
+      })
+      const pairResponse: { success: boolean; reason?: string } = consumed
+        ? { success: true }
+        : { success: false, reason: 'invalid or expired pair code' }
+
+      if (pairResponse.success) {
+        pairedSenderPolicies = addPairedSenderPolicy(senderPoliciesFile, {
+          sender: request.from.trim().toLowerCase(),
+          dispatchContextRules: request.dispatchContextRules ?? {},
+          pairedAt: new Date().toISOString(),
+        })
+        api.logger.info(`[AAMP] Paired sender ${request.from}; sender policy saved to ${senderPoliciesFile}`)
+      } else {
+        api.logger.warn(`[AAMP] Rejected pair.request from ${request.from}: ${pairResponse.reason}`)
+      }
+
+      await sendPairResponse(request, pairResponse.success, pairResponse.reason)
+    }
+
+    async function renderPairingCodeForCurrentAgent(): Promise<string> {
+      const identity = agentEmail
+        ? { email: agentEmail }
+        : loadCachedIdentity(cfg.credentialsFile ?? defaultCredentialsPath())
+      const email = identity?.email?.trim()
+      if (!email) {
+        return 'Error: AAMP mailbox identity is not ready. Start the AAMP plugin service first.'
+      }
+
+      const pairing = createPairingCode({
+        mailbox: email,
+        file: cfg.pairingFile ?? defaultPairingPath(),
+      })
+      const qr = await renderTerminalQr(pairing.connectUrl)
+      api.logger.info(`[AAMP] Pair with AAMP App before ${pairing.expiresAt}: ${pairing.connectUrl}`)
+      if (qr) api.logger.info(`\n${qr}`)
+
+      return [
+        `Pair ${email} with AAMP App or another AAMP runtime.`,
+        `Expires: ${pairing.expiresAt}`,
+        qr ? `\nScan this QR code:\n${qr}` : '\nCould not render a terminal QR code.',
+        `\nPairing URL: ${pairing.connectUrl}`,
+      ].join('\n')
+    }
+
     function wakeAgentForPendingTask(task: PendingTask): void {
       const fallbackSessionKey = buildWakeSessionKeyForPendingTask(task, api.config)
       const openClawSessionKey = buildSessionKeyForPendingTask(task, api.config)
@@ -822,6 +943,15 @@ export default {
       lastLoggedTransportMode = 'disconnected'
       api.logger.info(`[AAMP] Mailbox identity ready — ${agentEmail}`)
 
+      pairedSenderPolicies = loadPairedSenderPolicies(cfg.senderPoliciesFile ?? defaultSenderPoliciesPath())
+      const pairing = createPairingCode({
+        mailbox: agentEmail,
+        file: cfg.pairingFile ?? defaultPairingPath(),
+      })
+      api.logger.info(`[AAMP] Pair with AAMP App before ${pairing.expiresAt}: ${pairing.connectUrl}`)
+      const qr = await renderTerminalQr(pairing.connectUrl)
+      if (qr) api.logger.info(`\n${qr}`)
+
       // All traffic goes through aampHost (port 3000).
       // The management service proxies /jmap/* and /.well-known/jmap → Stalwart:8080.
       const base = baseUrl(cfg.aampHost)
@@ -847,7 +977,7 @@ export default {
             }
 
             // ── Sender policy / dispatch-context authorization ────────────────────
-            const decision = matchSenderPolicy(task, cfg.senderPolicies)
+            const decision = matchCombinedSenderPolicy(task, cfg.senderPolicies, pairedSenderPolicies)
             if (!decision.allowed) {
               api.logger.warn(`[AAMP] ✗ rejected by senderPolicies: ${task.from}  task=${task.taskId}  reason=${decision.reason}`)
               void aampClient!.sendResult({
@@ -911,6 +1041,14 @@ export default {
         if (removed) {
           api.logger.info(`[AAMP] Cancelled task ${cancel.taskId} — removed from pending queue`)
         }
+      })
+
+      ;(aampClient as unknown as {
+        on(event: 'pair.request', handler: (request: PairRequest) => void): void
+      }).on('pair.request', (request) => {
+        void handlePairRequest(request).catch((err) => {
+          api.logger.warn(`[AAMP] Failed to handle pair.request: ${(err as Error).message}`)
+        })
       })
 
       // ── Sub-task result: another agent completed a task we dispatched ──────
@@ -1817,6 +1955,17 @@ export default {
     }, { name: 'aamp_pending_tasks' })
 
     api.registerTool({
+      name: 'aamp_pairing_code',
+      description:
+        'Generate a fresh five-minute AAMP pairing code for this OpenClaw agent and show a QR code. ' +
+        'Use this when the user asks to pair AAMP App or another AAMP runtime with this agent.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({
+        content: [{ type: 'text', text: await renderPairingCodeForCurrentAgent() }],
+      }),
+    }, { name: 'aamp_pairing_code' })
+
+    api.registerTool({
       name: 'aamp_cancel_task',
       description: 'Cancel a pending AAMP task and notify the dispatcher.',
       parameters: {
@@ -1957,17 +2106,9 @@ export default {
               const dir = '/tmp/aamp-files'
               ensureDir(dir)
               const downloaded: string[] = []
-              const base = baseUrl(cfg.aampHost)
-              const identity = loadCachedIdentity(cfg.credentialsFile ?? defaultCredentialsPath())
-              const authHeader = identity ? `Basic ${Buffer.from(identity.email + ':' + identity.smtpPassword).toString('base64')}` : ''
               for (const att of r.attachments) {
                 try {
-                  // Direct JMAP blob download — construct URL manually
-                  const dlUrl = `${base}/jmap/download/n/${encodeURIComponent(att.blobId)}/${encodeURIComponent(att.filename)}?accept=application/octet-stream`
-                  api.logger.info(`[AAMP] Fetching ${dlUrl}`)
-                  const dlRes = await fetch(dlUrl, { headers: { Authorization: authHeader } })
-                  if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`)
-                  const buffer = Buffer.from(await dlRes.arrayBuffer())
+                  const buffer = await aampClient!.downloadBlob(att.blobId, att.filename)
                   const filepath = `${dir}/${att.filename}`
                   writeBinaryFile(filepath, buffer)
                   downloaded.push(`${att.filename} (${(buffer.length / 1024).toFixed(1)} KB) → ${filepath}`)
@@ -2037,15 +2178,10 @@ export default {
           return { content: [{ type: 'text', text: 'Error: email parameter is required' }] }
         }
         try {
-          const discoveryRes = await fetch(`${base}/.well-known/aamp`)
-          if (!discoveryRes.ok) throw new Error(`HTTP ${discoveryRes.status}`)
-          const discovery = await discoveryRes.json() as { api?: { url?: string } }
-          const apiUrl = discovery.api?.url
-          if (!apiUrl) throw new Error('AAMP discovery did not return api.url')
-          const apiBase = new URL(apiUrl, `${base}/`).toString()
-          const res = await fetch(`${apiBase}?action=aamp.mailbox.check&email=${encodeURIComponent(email)}`)
-          if (!res.ok) throw new Error(`HTTP ${res.status}`)
-          const data = await res.json() as { aamp: boolean; domain?: string }
+          const data = await AampClient.checkMailbox({
+            aampHost: base,
+            email,
+          })
           return {
             content: [{
               type: 'text',
@@ -2133,6 +2269,16 @@ export default {
             .join('\n'),
         }
       },
+    })
+
+    api.registerCommand({
+      name: 'aamp-pair',
+      description: 'Show a fresh AAMP pairing QR code for this OpenClaw agent',
+      acceptsArgs: false,
+      requireAuth: false,
+      handler: async () => ({
+        text: await renderPairingCodeForCurrentAgent(),
+      }),
     })
   },
 }

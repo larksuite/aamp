@@ -4,7 +4,7 @@
     "dist"
   ],
   "license": "MIT",
-  "version": "0.1.14",
+  "version": "0.1.20",
   "description": "Bridge ACP-compatible agents (Claude, Codex, Gemini, etc.) into the AAMP email network — zero code, config-driven",
   "type": "module",
   "main": "dist/index.js",
@@ -18,10 +18,12 @@
   },
   "dependencies": {
     "aamp-sdk": "file:../sdks/nodejs",
+    "qrcode-terminal": "^0.12.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "@types/qrcode-terminal": "^0.12.2",
     "tsx": "^4.7.1",
     "typescript": "^5.4.3"
   },

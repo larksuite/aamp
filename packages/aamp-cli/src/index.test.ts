@@ -14,6 +14,7 @@ class FakeClient {
   sendCancel = vi.fn().mockResolvedValue(undefined)
   sendCardQuery = vi.fn().mockResolvedValue({ taskId: 'card-1', messageId: 'msg-card' })
   sendCardResponse = vi.fn().mockResolvedValue(undefined)
+  sendPairRequest = vi.fn().mockResolvedValue({ taskId: 'pair-1', messageId: 'msg-pair-1' })
   verifySmtp = vi.fn().mockResolvedValue(true)
   connect = vi.fn().mockResolvedValue(undefined)
   disconnect = vi.fn()
@@ -36,6 +37,9 @@ class FakeClient {
 
 const registerMailbox = vi.fn()
 const fromMailboxIdentity = vi.fn()
+const buildPairingUrl = vi.fn()
+const createPairingCode = vi.fn()
+const parsePairingUrl = vi.fn()
 const renderThreadHistoryForAgent = vi.fn((events: Array<{ question?: string }>) => (
   events.length ? `Prior thread context:\n- ${events[0]?.question ?? 'event'}` : ''
 ))
@@ -52,6 +56,25 @@ describe('aamp-cli helpers', () => {
     registerMailbox.mockReset()
     fromMailboxIdentity.mockReset()
     fromMailboxIdentity.mockImplementation(() => new FakeClient())
+    buildPairingUrl.mockReset()
+    buildPairingUrl.mockImplementation(({ mailbox, pairCode }: { mailbox: string; pairCode: string }) =>
+      `aamp://connect?mailbox=${encodeURIComponent(mailbox)}&pair_code=${encodeURIComponent(pairCode)}`,
+    )
+    createPairingCode.mockReset()
+    createPairingCode.mockImplementation(({ mailbox }: { mailbox: string }) => ({
+      mailbox,
+      pairCode: 'pair-code',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      connectUrl: `aamp://connect?mailbox=${encodeURIComponent(mailbox)}&pair_code=pair-code`,
+    }))
+    parsePairingUrl.mockReset()
+    parsePairingUrl.mockImplementation((url: string) => {
+      const parsed = new URL(url)
+      return {
+        mailbox: parsed.searchParams.get('mailbox') ?? '',
+        pairCode: parsed.searchParams.get('pair_code') ?? '',
+      }
+    })
     promptAnswers = []
 
     vi.doMock('aamp-sdk', () => ({
@@ -59,6 +82,9 @@ describe('aamp-cli helpers', () => {
         registerMailbox,
         fromMailboxIdentity,
       },
+      buildPairingUrl,
+      createPairingCode,
+      parsePairingUrl,
       renderThreadHistoryForAgent,
     }))
     vi.doMock('node:readline/promises', () => ({
@@ -350,6 +376,41 @@ describe('aamp-cli helpers', () => {
       bodyText: 'Please review the change.',
     }))
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"taskId": "task-1"'))
+  })
+
+  it('can send pair.request from split mailbox and pair code fields', async () => {
+    const cli = await import('./index.ts')
+    const profilePath = path.join(tempHome, '.aamp', 'cli', 'profiles', 'default.json')
+    await mkdir(path.dirname(profilePath), { recursive: true })
+    await writeFile(profilePath, JSON.stringify({
+      email: 'sender@meshmail.ai',
+      smtpPassword: 'smtp-1',
+      baseUrl: 'https://meshmail.ai',
+      smtpHost: 'meshmail.ai',
+      smtpPort: 587,
+      rejectUnauthorized: true,
+    }), 'utf8')
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await cli.runPair(cli.parseArgs([
+      'pair',
+      '--mailbox', 'agent@meshmail.ai',
+      '--pair-code', 'abc123',
+      '--dispatch-context-rule', 'source=cli',
+    ]))
+
+    expect(buildPairingUrl).toHaveBeenCalledWith({
+      mailbox: 'agent@meshmail.ai',
+      pairCode: 'abc123',
+    })
+    const client = fromMailboxIdentity.mock.results[0].value as FakeClient
+    expect(client.sendPairRequest).toHaveBeenCalledWith({
+      to: 'agent@meshmail.ai',
+      pairCode: 'abc123',
+      dispatchContextRules: { source: ['cli'] },
+    })
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"pairRequestSent": true'))
   })
 
   it('checks only AAMP discovery for status', async () => {

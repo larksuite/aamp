@@ -8,6 +8,7 @@
       "aamp_send_result",
       "aamp_send_help",
       "aamp_pending_tasks",
+      "aamp_pairing_code",
       "aamp_cancel_task",
       "aamp_dispatch_task",
       "aamp_check_protocol",
@@ -27,6 +28,8 @@
           "cardText": { "type": "string" },
           "cardFile": { "type": "string" },
           "credentialsFile": { "type": "string", "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json" },
+          "pairingFile": { "type": "string", "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json" },
+          "senderPoliciesFile": { "type": "string", "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json" },
           "senderPolicies": {
             "type": "array",
             "items": {
@@ -53,6 +56,8 @@
         "cardText": { "label": "Card Text", "placeholder": "Detailed capability card text", "promptOnInstall": false },
         "cardFile": { "label": "Card File", "placeholder": "/absolute/path/to/card.md", "promptOnInstall": false },
         "credentialsFile": { "label": "Credentials File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json", "promptOnInstall": false },
+        "pairingFile": { "label": "Pairing File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json", "promptOnInstall": false },
+        "senderPoliciesFile": { "label": "Paired Senders File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json", "promptOnInstall": false },
         "senderPolicies": { "label": "Sender Policies", "placeholder": "[{\"sender\":\"meegle-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]", "promptOnInstall": true }
       }
     }
@@ -67,6 +72,8 @@
       "cardText":        { "type": "string" },
       "cardFile":        { "type": "string" },
       "credentialsFile": { "type": "string", "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json" },
+      "pairingFile":     { "type": "string", "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json" },
+      "senderPoliciesFile": { "type": "string", "default": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json" },
       "senderPolicies": {
         "type": "array",
         "items": {
@@ -93,6 +100,8 @@
     "cardText":        { "label": "Card Text", "placeholder": "Detailed capability card text", "promptOnInstall": false },
     "cardFile":        { "label": "Card File", "placeholder": "/absolute/path/to/card.md", "promptOnInstall": false },
     "credentialsFile": { "label": "Credentials File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json", "promptOnInstall": false },
+    "pairingFile":     { "label": "Pairing File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json", "promptOnInstall": false },
+    "senderPoliciesFile": { "label": "Paired Senders File", "placeholder": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json", "promptOnInstall": false },
     "senderPolicies":  { "label": "Sender Policies", "placeholder": "[{\"sender\":\"meegle-bot@meshmail.ai\",\"dispatchContextRules\":{\"project_key\":[\"proj_123\"]}}]", "promptOnInstall": true }
   },
   "skills": ["./skills"]

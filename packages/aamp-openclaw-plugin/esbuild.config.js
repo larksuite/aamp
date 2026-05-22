@@ -14,7 +14,7 @@ const ctx = await esbuild.context({
   format: 'esm',
   target: 'node18',
   outdir: 'dist',
-  external: ['nodemailer', 'ws'],
+  external: ['nodemailer', 'ws', 'qrcode-terminal'],
   sourcemap: true,
   logLevel: 'info',
 })

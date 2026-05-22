@@ -9,8 +9,12 @@ import { pathToFileURL } from 'node:url'
 import { stdin as input, stdout as output } from 'node:process'
 import {
   AampClient,
+  buildPairingUrl,
+  createPairingCode,
+  parsePairingUrl,
   renderThreadHistoryForAgent,
   type AampAttachment,
+  type DispatchContextRules,
   type HydratedTaskDispatch,
   type ReceivedAttachment,
   type SendCancelOptions,
@@ -52,6 +56,7 @@ type CommandName =
   | 'directory-update'
   | 'card-query'
   | 'card-response'
+  | 'pair'
   | 'node'
   | 'unknown'
 
@@ -105,6 +110,9 @@ Usage:
   aamp-cli cancel --to EMAIL --task-id ID [--body TEXT]
   aamp-cli card-query --to EMAIL [--body TEXT]
   aamp-cli card-response --to EMAIL --task-id ID --summary TEXT [--body TEXT] [--card-file PATH]
+  aamp-cli pair --url AAMP_PAIRING_URL [--profile NAME] [--dispatch-context-rule KEY=VALUE[,VALUE]...]
+  aamp-cli pair --mailbox EMAIL --pair-code CODE [--profile NAME] [--dispatch-context-rule KEY=VALUE[,VALUE]...]
+  aamp-cli pair EMAIL CODE [--profile NAME]
   aamp-cli node <init|show|serve|sync-card|call|command|policy> ...
 
 Examples:
@@ -117,6 +125,8 @@ Examples:
   aamp-cli help --to meego@meshmail.ai --task-id 123 --question "Which environment?" --option staging --option production
   aamp-cli cancel --to agent@meshmail.ai --task-id 123 --body "No longer needed"
   aamp-cli card-query --to agent@meshmail.ai --query "What services do you provide?"
+  aamp-cli pair --url "aamp://connect?mailbox=agent@meshmail.ai&pair_code=abc123"
+  aamp-cli pair --mailbox agent@meshmail.ai --pair-code abc123
   aamp-cli node init --email worker@meshmail.ai --password smtp-1
 `)
 }
@@ -125,8 +135,9 @@ function printNodeUsage(): void {
   console.log(`AAMP CLI Node
 
 Usage:
-  aamp-cli node init [--node NAME] [--mailbox-profile NAME | --email EMAIL --password PASSWORD] [--base-url URL] [--smtp-host HOST] [--smtp-port N] [--reject-unauthorized true|false] [--host URL] [--slug NAME]
+  aamp-cli node init [--node NAME] [--mailbox-profile NAME | --email EMAIL --password PASSWORD] [--base-url URL] [--smtp-host HOST] [--smtp-port N] [--reject-unauthorized true|false] [--host URL] [--slug NAME] [--no-start]
   aamp-cli node show [--node NAME]
+  aamp-cli node pair [--node NAME] [--no-start]
   aamp-cli node serve [--node NAME]
   aamp-cli node sync-card [--node NAME]
   aamp-cli node call [--node NAME | --profile NAME] --target EMAIL --command NAME [--title TEXT] [--stream none|status-only|full] [--task-id ID] [--priority urgent|high|normal] [--expires-at ISO] [--dispatch-context KEY=VALUE]... [--arg KEY=VALUE]... [--attachment SLOT=PATH]... [--any_other_key VALUE]...
@@ -269,6 +280,37 @@ async function promptYesNo(question: string, defaultYes = true): Promise<boolean
 
 function normalizeSlugInput(inputValue: string): string {
   return inputValue.toLowerCase().replace(/[\s_]+/g, '-').replace(/[^a-z0-9-]/g, '')
+}
+
+function renderQrFallback(value: string): void {
+  console.log(`Pairing URL: ${value}`)
+}
+
+async function renderTerminalQr(value: string): Promise<void> {
+  try {
+    const qrcode = await import('qrcode-terminal') as {
+      default?: { generate: (input: string, opts: { small: boolean }, cb: (qr: string) => void) => void }
+      generate?: (input: string, opts: { small: boolean }, cb: (qr: string) => void) => void
+    }
+    const generator = qrcode.default?.generate ?? qrcode.generate
+    if (!generator) {
+      renderQrFallback(value)
+      return
+    }
+    generator(value, { small: true }, (qr) => console.log(qr))
+  } catch {
+    renderQrFallback(value)
+  }
+}
+
+function parseDispatchContextRules(values: string[]): DispatchContextRules | undefined {
+  const rules: DispatchContextRules = {}
+  for (const value of values) {
+    const { key, value: rawValues } = parseKeyValueEntry(value, 'dispatch-context-rule')
+    const entries = rawValues.split(',').map((item) => item.trim()).filter(Boolean)
+    if (entries.length > 0) rules[key.trim().toLowerCase()] = entries
+  }
+  return Object.keys(rules).length > 0 ? rules : undefined
 }
 
 async function tryLoadProfile(profile = DEFAULT_PROFILE): Promise<CliProfile | null> {
@@ -568,6 +610,46 @@ export async function runRegister(args: ParsedArgs): Promise<void> {
     baseUrl: identity.baseUrl,
     mailboxToken: identity.mailboxToken,
     savedTo: file,
+  }, null, 2))
+}
+
+export async function runPair(args: ParsedArgs): Promise<void> {
+  const profileName = firstArg(args, 'profile') ?? DEFAULT_PROFILE
+  const positionalPairingUrl = args.positionals[0]?.startsWith('aamp://')
+    ? args.positionals[0]
+    : undefined
+  const pairingUrl = firstArg(args, 'url') ?? positionalPairingUrl
+  const mailbox = firstArg(args, 'mailbox') ?? firstArg(args, 'to') ?? (positionalPairingUrl ? undefined : args.positionals[0])
+  const pairCode = firstArg(args, 'pair-code') ?? firstArg(args, 'pairCode') ?? (positionalPairingUrl ? undefined : args.positionals[1])
+  const resolvedPairingUrl = pairingUrl ?? (
+    mailbox && pairCode
+      ? buildPairingUrl({ mailbox, pairCode })
+      : undefined
+  )
+  if (!resolvedPairingUrl) {
+    throw new Error('Missing required --url or --mailbox + --pair-code')
+  }
+
+  const pairing = parsePairingUrl(resolvedPairingUrl)
+  const profile = await loadProfile(profileName)
+  const client = createClient(profile)
+  const dispatchContextRules = parseDispatchContextRules(allArgs(args, 'dispatch-context-rule'))
+    ?? pairing.dispatchContextRules
+
+  const result = await client.sendPairRequest({
+    to: pairing.mailbox,
+    pairCode: pairing.pairCode,
+    ...(dispatchContextRules ? { dispatchContextRules } : {}),
+  })
+
+  console.log(JSON.stringify({
+    profile: profileName,
+    from: profile.email,
+    to: pairing.mailbox,
+    taskId: result.taskId,
+    messageId: result.messageId,
+    pairRequestSent: true,
+    awaitPairRespond: true,
   }, null, 2))
 }
 
@@ -1146,13 +1228,37 @@ async function buildInteractiveCommandSpec(nodeName: string): Promise<Registered
 export async function runNodeInit(args: ParsedArgs): Promise<void> {
   const nodeName = getNodeName(args)
   const config = createDefaultNodeConfig(await mailboxConfigFromArgs(args))
+  config.pairing = createPairingCode({
+    mailbox: config.mailbox.email,
+    ttlSeconds: 300,
+  })
   const file = await saveNodeConfig(nodeName, config)
   console.log(JSON.stringify({
     node: nodeName,
     savedTo: file,
     mailbox: config.mailbox.email,
+    pairingUrl: config.pairing.connectUrl,
+    pairingExpiresAt: config.pairing.expiresAt,
     summary: createNodeConfigSummary(config),
   }, null, 2))
+  await renderTerminalQr(config.pairing.connectUrl)
+}
+
+async function runNodePair(args: ParsedArgs): Promise<void> {
+  const nodeName = getNodeName(args)
+  const config = await loadNodeConfig(nodeName)
+  config.pairing = createPairingCode({
+    mailbox: config.mailbox.email,
+    ttlSeconds: 300,
+  })
+  await saveNodeConfig(nodeName, config)
+  console.log(JSON.stringify({
+    node: nodeName,
+    mailbox: config.mailbox.email,
+    pairingUrl: config.pairing.connectUrl,
+    pairingExpiresAt: config.pairing.expiresAt,
+  }, null, 2))
+  await renderTerminalQr(config.pairing.connectUrl)
 }
 
 async function runNodeShow(args: ParsedArgs): Promise<void> {
@@ -1299,10 +1405,30 @@ async function runNode(args: ParsedArgs): Promise<void> {
 
   if (subcommand === 'init') {
     await runNodeInit(args)
+    if (!args.booleans.has('no-start')) {
+      const nodeName = getNodeName(args)
+      const config = await loadNodeConfig(nodeName)
+      await runNodeServe(nodeName, config, console, { quiet: true })
+    } else {
+      console.log('Node not started because --no-start was provided.')
+      console.log('Run: aamp-cli node serve')
+    }
     return
   }
   if (subcommand === 'show') {
     await runNodeShow(args)
+    return
+  }
+  if (subcommand === 'pair') {
+    await runNodePair(args)
+    if (!args.booleans.has('no-start')) {
+      const nodeName = getNodeName(args)
+      const config = await loadNodeConfig(nodeName)
+      await runNodeServe(nodeName, config, console, { quiet: true })
+    } else {
+      console.log('Node not started because --no-start was provided.')
+      console.log('Run: aamp-cli node serve')
+    }
     return
   }
   if (subcommand === 'serve') {
@@ -1408,6 +1534,9 @@ export async function main(): Promise<void> {
       return
     case 'card-response':
       await runCardResponse(args)
+      return
+    case 'pair':
+      await runPair(args)
       return
     case 'node':
       await runNode(args)

@@ -112,8 +112,13 @@ The core protocol is intentionally small. It standardizes the minimum shared con
 - `task.ack`
 - `task.help_needed`
 - `task.result`
+- `task.stream.opened`
+- `pair.request`
+- `pair.respond`
+- `card.query`
+- `card.response`
 
-This keeps the wire protocol stable while allowing specific deployments to add helper surfaces such as mailbox registration, directory APIs, workflow writeback, or streaming compatibility profiles.
+This keeps the wire protocol stable while allowing specific deployments to add helper surfaces such as mailbox registration, directory APIs, workflow writeback, or runtime compatibility profiles.
 
 Typical use cases:
 
@@ -124,6 +129,22 @@ Typical use cases:
 - connecting terminal operators to mailbox-native tasks
 - bridging ACP-compatible runtimes into a shared task network
 - returning structured outputs and files through a standard message thread
+
+## Pairing Code
+
+Pairing code is AAMP's first-contact authorization flow. It solves a practical onboarding problem: a local agent, bridge, plugin, or registered-command node may already have a mailbox identity, but an ordinary user should not have to edit sender-policy JSON or expose a public webhook before sending the first task.
+
+The receiver generates a short-lived one-time code and publishes it as an `aamp://connect` URL. The consumer parses the URL, sends `pair.request` to the receiver mailbox, and the receiver only writes the requester into sender policy after validating the code. `pair.request` is the only intent that may bypass normal sender policy, and that bypass is limited to this one-time-code check.
+
+```text
+aamp://connect?mailbox=agent@meshmail.ai&pair_code=<base64url-code>
+aamp://connect?mailbox=agent@meshmail.ai&pair_code=<base64url-code>&dispatch_context_rules=<base64url-json>
+```
+
+- **Generation**: SDK helpers generate six random bytes encoded as base64url by default, persist the mailbox, code, connect URL, expiry, and optional dispatch-context rules, and use a five-minute TTL in the reference implementation. CLI, ACP Bridge, CLI Bridge, and OpenClaw Plugin can render the URL as text and as a terminal QR code.
+- **Consumption**: AAMP App, User UI, `aamp-cli pair`, Feishu Bridge, WeChat Bridge, and the AAMP Skill parse the URL and send mail to `mailbox` with `X-AAMP-Intent: pair.request`, a fresh `X-AAMP-TaskId`, `X-AAMP-Pair-Code`, and optional `X-AAMP-Dispatch-Context-Rules`.
+- **Policy update**: The receiver rejects unknown, expired, or already consumed codes. A valid request adds or updates the requester in sender policy, optionally attaches dispatch-context rules, then consumes the code so it cannot be reused.
+- **Response**: The receiver must answer with `pair.respond` using the same taskId. Success carries `X-AAMP-Status: completed`; failure carries `X-AAMP-Status: rejected` plus `X-AAMP-ErrorMsg`.
 
 ## Run AAMP Quickly
 
@@ -501,6 +522,11 @@ Core intents:
 - `task.ack`
 - `task.help_needed`
 - `task.result`
+- `task.stream.opened`
+- `pair.request`
+- `pair.respond`
+- `card.query`
+- `card.response`
 
 Common headers:
 
@@ -509,11 +535,16 @@ Common headers:
 - `X-AAMP-Session-Key`
 - `X-AAMP-Priority`
 - `X-AAMP-Expires-At`
+- `X-AAMP-Stream-Id`
+- `X-AAMP-Pair-Code`
+- `X-AAMP-Dispatch-Context-Rules`
 - `X-AAMP-Dispatch-Context`
 - `X-AAMP-ParentTaskId`
 - `X-AAMP-Status`
+- `X-AAMP-ErrorMsg`
 - `X-AAMP-StructuredResult`
 - `X-AAMP-SuggestedOptions`
+- `X-AAMP-Card-Summary`
 
 For protocol details, see:
 

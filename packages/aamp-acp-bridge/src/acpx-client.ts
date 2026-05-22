@@ -202,7 +202,7 @@ function supportsJsonStreamingFallback(stderr: string): boolean {
 }
 
 function isCliTranscriptHeader(line: string): boolean {
-  return /^\[(client|tool|done|error|warning)\](?:\s|$)/i.test(line)
+  return /^\[(acpx|client|tool|done|error|warning)\](?:\s|$)/i.test(line)
 }
 
 function extractFinalReplyFromTranscript(output: string): string {
@@ -466,7 +466,7 @@ export class AcpxClient {
           .find((message) => message.length > 0) ?? ''
         const output = finalAssistantOutput
           || sanitizePromptOutput(rawStdout)
-          || stderr.trim()
+          || sanitizePromptOutput(stderr)
 
         if (code !== 0 && !output) {
           reject(new Error(this.formatProcessFailure(
@@ -511,7 +511,7 @@ export class AcpxClient {
       proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
 
       proc.on('close', (code) => {
-        const output = sanitizePromptOutput(stdout) || stderr.trim()
+        const output = sanitizePromptOutput(stdout) || sanitizePromptOutput(stderr)
 
         if (code !== 0 && !output) {
           reject(new Error(this.formatProcessFailure(

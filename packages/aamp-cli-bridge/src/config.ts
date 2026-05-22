@@ -37,6 +37,8 @@ const agentConfigSchema = z.object({
   cardText: z.string().optional(),
   cardFile: z.string().optional(),
   credentialsFile: z.string().optional(),
+  pairingFile: z.string().optional(),
+  senderPoliciesFile: z.string().optional(),
   senderWhitelist: z.array(z.string().email()).optional(),
   senderPolicies: z.array(senderPolicySchema).optional(),
   taskDispatchConcurrency: z.number().int().positive().optional(),

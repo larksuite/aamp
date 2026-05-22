@@ -10,10 +10,33 @@ npm install aamp-acp-bridge
 
 ## Usage
 
-Initialize a config file:
+Initialize the bridge:
 
 ```bash
 npx aamp-acp-bridge init
+```
+
+The init wizard scans installed ACP-capable agents, then lets you select multiple entries with arrow keys, Space, and Enter. For each selected agent, choose one authorization setup method:
+
+- Pair with a five-minute terminal QR code plus the matching `aamp://connect?...` URL.
+- Manually enter `senderPolicies`.
+- Reuse existing `senderPolicies`, when any are available.
+- Configure sender authorization later; `task.dispatch` is rejected until pairing or policy setup is complete.
+
+If you choose QR pairing, `init` starts the bridge immediately after writing config, so scanning the QR code with AAMP App works right away. The bridge answers each `pair.request` with `pair.respond`; rejected responses include the failure reason.
+
+Use `--no-start` only when you need to generate config in a script without
+keeping the bridge process running:
+
+```bash
+npx aamp-acp-bridge init --agent claude --no-start
+```
+
+After an agent has been initialized, generate a fresh pairing QR code without
+re-running setup:
+
+```bash
+npx aamp-acp-bridge pair --agent claude
 ```
 
 Start the bridge:
@@ -79,7 +102,8 @@ Minimal example:
 }
 ```
 
-`senderPolicies` is optional. If configured, the bridge requires the sender to match one policy and optionally enforces exact-match `X-AAMP-Dispatch-Context` rules.
+`senderPolicies` is optional, but omitted policies do not authorize anyone by default. Use QR pairing or configure at least one policy before sending `task.dispatch`; matching policies can also enforce exact-match `X-AAMP-Dispatch-Context` rules.
 Legacy `senderWhitelist` configs still load and are normalized into `senderPolicies`.
+When editing the `senderPoliciesFile` directly, `pairedAt` is optional; the bridge accepts manually added records with just `sender` and optional `dispatchContextRules`.
 `credentialsFile` is optional. If omitted, the bridge uses `~/.aamp/acp-bridge/credentials/<agent>.json`.
 `taskDispatchConcurrency` is optional and defaults to `10`.
