@@ -28,6 +28,8 @@ export { JmapPushClient } from './jmap-push.js'
 export { SmtpSender, deriveMailboxServiceDefaults } from './smtp-sender.js'
 export { renderThreadHistoryForAgent } from './thread.js'
 export {
+  DEFAULT_PAIRING_WEB_URL,
+  buildPairingWebUrl,
   buildPairingUrl,
   consumePairingCode,
   createPairedSenderPolicy,
@@ -35,6 +37,7 @@ export {
   isPairingUrl,
   matchPairedSenderPolicy,
   normalizeDispatchContextRules,
+  pairingUrlToWebUrl,
   parsePairingUrl,
   upsertPairedSenderPolicy,
 } from './pairing.js'

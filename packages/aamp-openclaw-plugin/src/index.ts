@@ -58,6 +58,7 @@ import {
   loadPairedSenderPolicies,
   loadCachedIdentity,
   loadTaskState,
+  pairingUrlToWebUrl,
   readBinaryFile,
   saveCachedIdentity,
   saveTaskState,
@@ -839,7 +840,7 @@ export default {
         mailbox: email,
         file: cfg.pairingFile ?? defaultPairingPath(),
       })
-      const qr = await renderTerminalQr(pairing.connectUrl)
+      const qr = await renderTerminalQr(pairingUrlToWebUrl(pairing.connectUrl))
       api.logger.info(`[AAMP] Pair with AAMP App before ${pairing.expiresAt}: ${pairing.connectUrl}`)
       if (qr) api.logger.info(`\n${qr}`)
 
@@ -949,7 +950,7 @@ export default {
         file: cfg.pairingFile ?? defaultPairingPath(),
       })
       api.logger.info(`[AAMP] Pair with AAMP App before ${pairing.expiresAt}: ${pairing.connectUrl}`)
-      const qr = await renderTerminalQr(pairing.connectUrl)
+      const qr = await renderTerminalQr(pairingUrlToWebUrl(pairing.connectUrl))
       if (qr) api.logger.info(`\n${qr}`)
 
       // All traffic goes through aampHost (port 3000).

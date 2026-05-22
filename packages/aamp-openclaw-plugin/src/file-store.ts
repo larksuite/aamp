@@ -25,6 +25,8 @@ export interface PairingCodeState {
   consumedAt?: string
 }
 
+export const DEFAULT_PAIRING_WEB_URL = 'https://meshmail.ai/pair'
+
 export interface PairedSenderPolicy {
   sender: string
   dispatchContextRules: DispatchContextRules
@@ -112,6 +114,15 @@ export function createPairingCode(params: {
   mkdirSync(dirname(resolved), { recursive: true })
   writeFileSync(resolved, JSON.stringify(state, null, 2), 'utf-8')
   return state
+}
+
+export function pairingUrlToWebUrl(connectUrl: string): string {
+  const parsed = new URL(connectUrl)
+  const url = new URL(DEFAULT_PAIRING_WEB_URL)
+  for (const [key, value] of parsed.searchParams) {
+    url.searchParams.set(key, value)
+  }
+  return url.toString()
 }
 
 export function consumePairingCode(params: {

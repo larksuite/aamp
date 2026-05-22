@@ -197,6 +197,15 @@ async function renderTerminalQr(value) {
   }
 }
 
+function pairingUrlToWebUrl(connectUrl) {
+  const parsed = new URL(connectUrl)
+  const url = new URL('https://meshmail.ai/pair')
+  for (const [key, value] of parsed.searchParams) {
+    url.searchParams.set(key, value)
+  }
+  return url.toString()
+}
+
 export function normalizeBaseUrl(url) {
   if (url.startsWith('http://') || url.startsWith('https://')) return url.replace(/\/$/, '')
   return `https://${url.replace(/\/$/, '')}`
@@ -753,7 +762,7 @@ export async function runInit() {
   const pairing = identityResult.email
     ? createPairingFile({ email: identityResult.email, pairingFile: DEFAULT_PAIRING_FILE })
     : null
-  const qr = pairing ? await renderTerminalQr(pairing.connectUrl) : ''
+  const qr = pairing ? await renderTerminalQr(pairingUrlToWebUrl(pairing.connectUrl)) : ''
 
   const restartResult = restartGateway()
 

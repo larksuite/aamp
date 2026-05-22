@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildPairingUrl,
+  buildPairingWebUrl,
   consumePairingCode,
   createPairedSenderPolicy,
   createPairingCode,
   isPairingUrl,
   matchPairedSenderPolicy,
+  pairingUrlToWebUrl,
   parsePairingUrl,
   upsertPairedSenderPolicy,
 } from '../src/pairing.js'
@@ -21,6 +23,15 @@ describe('pairing URL helpers', () => {
     })
 
     expect(url).toContain('aamp://connect')
+    expect(buildPairingWebUrl(parsePairingUrl(url))).toContain('https://meshmail.ai/pair')
+    expect(pairingUrlToWebUrl(url)).toContain('https://meshmail.ai/pair')
+    expect(parsePairingUrl(pairingUrlToWebUrl(url))).toEqual({
+      mailbox: 'agent@meshmail.ai',
+      pairCode: 'abc123',
+      dispatchContextRules: {
+        source: ['wechat'],
+      },
+    })
     expect(parsePairingUrl(url)).toEqual({
       mailbox: 'agent@meshmail.ai',
       pairCode: 'abc123',

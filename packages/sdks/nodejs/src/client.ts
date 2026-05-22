@@ -32,11 +32,13 @@
 import { JmapPushClient } from './jmap-push.js'
 import {
   buildPairingUrl,
+  buildPairingWebUrl,
   consumePairingCode,
   createPairedSenderPolicy,
   createPairingCode,
   isPairingUrl,
   matchPairedSenderPolicy,
+  pairingUrlToWebUrl,
   parsePairingUrl,
   upsertPairedSenderPolicy,
 } from './pairing.js'
@@ -296,6 +298,10 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
   static createPairingCode = createPairingCode
 
   static buildPairingUrl = buildPairingUrl
+
+  static buildPairingWebUrl = buildPairingWebUrl
+
+  static pairingUrlToWebUrl = pairingUrlToWebUrl
 
   static parsePairingUrl = parsePairingUrl
 

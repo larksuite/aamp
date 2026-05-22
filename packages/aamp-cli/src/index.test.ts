@@ -40,6 +40,7 @@ const fromMailboxIdentity = vi.fn()
 const buildPairingUrl = vi.fn()
 const createPairingCode = vi.fn()
 const parsePairingUrl = vi.fn()
+const pairingUrlToWebUrl = vi.fn()
 const renderThreadHistoryForAgent = vi.fn((events: Array<{ question?: string }>) => (
   events.length ? `Prior thread context:\n- ${events[0]?.question ?? 'event'}` : ''
 ))
@@ -75,6 +76,11 @@ describe('aamp-cli helpers', () => {
         pairCode: parsed.searchParams.get('pair_code') ?? '',
       }
     })
+    pairingUrlToWebUrl.mockReset()
+    pairingUrlToWebUrl.mockImplementation((url: string) => {
+      const parsed = new URL(url)
+      return `https://meshmail.ai/pair?${parsed.searchParams.toString()}`
+    })
     promptAnswers = []
 
     vi.doMock('aamp-sdk', () => ({
@@ -84,6 +90,7 @@ describe('aamp-cli helpers', () => {
       },
       buildPairingUrl,
       createPairingCode,
+      pairingUrlToWebUrl,
       parsePairingUrl,
       renderThreadHistoryForAgent,
     }))

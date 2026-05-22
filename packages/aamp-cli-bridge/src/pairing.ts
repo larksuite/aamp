@@ -22,6 +22,8 @@ export interface PairingCodeState {
   consumedAt?: string
 }
 
+export const DEFAULT_PAIRING_WEB_URL = 'https://meshmail.ai/pair'
+
 function expandHome(pathValue: string): string {
   if (pathValue === '~') return homedir()
   if (pathValue.startsWith('~/')) return join(homedir(), pathValue.slice(2))
@@ -62,6 +64,15 @@ export function createPairingCode(params: {
   mkdirSync(dirname(params.file), { recursive: true })
   writeFileSync(params.file, JSON.stringify(state, null, 2))
   return state
+}
+
+export function pairingUrlToWebUrl(connectUrl: string): string {
+  const parsed = new URL(connectUrl)
+  const url = new URL(DEFAULT_PAIRING_WEB_URL)
+  for (const [key, value] of parsed.searchParams) {
+    url.searchParams.set(key, value)
+  }
+  return url.toString()
 }
 
 export function consumePairingCode(params: {

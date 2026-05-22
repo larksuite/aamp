@@ -11,6 +11,7 @@ import {
   AampClient,
   buildPairingUrl,
   createPairingCode,
+  pairingUrlToWebUrl,
   parsePairingUrl,
   renderThreadHistoryForAgent,
   type AampAttachment,
@@ -297,7 +298,7 @@ async function renderTerminalQr(value: string): Promise<void> {
       renderQrFallback(value)
       return
     }
-    generator(value, { small: true }, (qr) => console.log(qr))
+    generator(pairingUrlToWebUrl(value), { small: true }, (qr) => console.log(qr))
   } catch {
     renderQrFallback(value)
   }

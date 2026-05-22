@@ -43,6 +43,8 @@ export interface PairableSenderLike {
   dispatchContextRules?: DispatchContextRules
 }
 
+export const DEFAULT_PAIRING_WEB_URL = 'https://meshmail.ai/pair'
+
 function normalizeMailbox(value: string): string {
   const mailbox = value.trim().toLowerCase()
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mailbox)) {
@@ -109,6 +111,30 @@ export function buildPairingUrl(payload: PairingUrlPayload): string {
   return url.toString()
 }
 
+export function buildPairingWebUrl(
+  payload: PairingUrlPayload,
+  baseUrl = DEFAULT_PAIRING_WEB_URL,
+): string {
+  const mailbox = normalizeMailbox(payload.mailbox)
+  const pairCode = payload.pairCode.trim()
+  if (!pairCode) throw new Error('pairCode cannot be empty')
+
+  const url = new URL(baseUrl)
+  url.searchParams.set('mailbox', mailbox)
+  url.searchParams.set('pair_code', pairCode)
+
+  const rules = normalizeDispatchContextRules(payload.dispatchContextRules)
+  if (rules) {
+    url.searchParams.set('dispatch_context_rules', encodeBase64UrlJson(rules))
+  }
+
+  return url.toString()
+}
+
+export function pairingUrlToWebUrl(input: string, baseUrl = DEFAULT_PAIRING_WEB_URL): string {
+  return buildPairingWebUrl(parsePairingUrl(input), baseUrl)
+}
+
 export function createPairingCode(options: CreatePairingCodeOptions): PairingCode {
   const pairCode = options.pairCode?.trim() || randomBytes(6).toString('base64url')
   const dispatchContextRules = normalizeDispatchContextRules(options.dispatchContextRules)
@@ -133,8 +159,12 @@ export function parsePairingUrl(input: string): PairingUrlPayload {
     throw new Error('Invalid pairing URL')
   }
 
-  if (url.protocol !== 'aamp:' || url.hostname !== 'connect') {
-    throw new Error('Pairing URL must start with aamp://connect')
+  const isDeepLink = url.protocol === 'aamp:' && url.hostname === 'connect'
+  const isWebLink = (url.protocol === 'https:' || url.protocol === 'http:')
+    && url.hostname === 'meshmail.ai'
+    && url.pathname === '/pair'
+  if (!isDeepLink && !isWebLink) {
+    throw new Error('Pairing URL must start with aamp://connect or https://meshmail.ai/pair')
   }
 
   const mailbox = url.searchParams.get('mailbox') ?? ''

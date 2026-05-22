@@ -10,6 +10,7 @@ import {
   createPairingCode,
   defaultPairingFile,
   defaultSenderPoliciesFile,
+  pairingUrlToWebUrl,
 } from '../pairing.js'
 
 const KNOWN_AGENTS = [
@@ -474,7 +475,7 @@ function renderTerminalQr(value: string): void {
 
   try {
     console.log('  Scan this QR code with AAMP App:')
-    qrModule.generate(value, { small: true }, (qr) => console.log(qr))
+    qrModule.generate(pairingUrlToWebUrl(value), { small: true }, (qr) => console.log(qr))
   } catch {
     renderQrFallback(value)
   }

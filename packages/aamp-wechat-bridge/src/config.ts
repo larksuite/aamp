@@ -5,7 +5,7 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { randomUUID } from 'node:crypto'
 import { stdin as input, stdout as output } from 'node:process'
-import { AampClient, parsePairingUrl } from 'aamp-sdk'
+import { AampClient, isPairingUrl, parsePairingUrl } from 'aamp-sdk'
 import type { BridgeConfig, BridgeMailboxIdentity, BridgeState } from './types.js'
 
 const CONFIG_FILENAME = 'config.json'
@@ -133,7 +133,7 @@ export async function initializeBridgeConfig(options: InitBridgeOptions): Promis
 
   const aampHost = (options.aampHost ?? existing?.aampHost ?? await prompt('AAMP host', 'https://meshmail.ai')).trim()
   const targetInput = (options.pairingUrl ?? options.targetAgentEmail ?? existing?.targetAgentEmail ?? await prompt('Target AAMP agent email or pairing URL')).trim()
-  const pairing = targetInput.startsWith('aamp://')
+  const pairing = isPairingUrl(targetInput)
     ? parsePairingUrl(targetInput)
     : undefined
   const targetAgentEmail = pairing?.mailbox ?? targetInput
