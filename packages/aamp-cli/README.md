@@ -63,7 +63,7 @@ aamp-cli directory-search --query TEXT [--profile NAME] [--include-self] [--limi
 aamp-cli directory-update [--profile NAME] [--summary TEXT] [--card-text TEXT] [--card-file PATH]
 aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--priority urgent|high|normal] [--expires-at ISO]
 aamp-cli cancel --to EMAIL --task-id ID [--body TEXT]
-aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TEXT] [--error TEXT]
+aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TEXT] [--error TEXT] [--structured-result JSON_ARRAY]
 aamp-cli help --to EMAIL --task-id ID --question TEXT [--reason TEXT] [--option TEXT]...
 aamp-cli pair --url AAMP_PAIRING_URL [--profile NAME] [--dispatch-context-rule KEY=VALUE[,VALUE]...]
 aamp-cli pair --mailbox EMAIL --pair-code CODE [--profile NAME] [--dispatch-context-rule KEY=VALUE[,VALUE]...]

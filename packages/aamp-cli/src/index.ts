@@ -22,6 +22,7 @@ import {
   type SendHelpOptions,
   type SendResultOptions,
   type SendTaskOptions,
+  type StructuredResultField,
 } from 'aamp-sdk'
 import {
   DEFAULT_NODE_NAME,
@@ -106,7 +107,7 @@ Usage:
   aamp-cli directory-search --query TEXT [--profile NAME] [--include-self] [--limit N]
   aamp-cli directory-update [--profile NAME] [--summary TEXT] [--card-text TEXT] [--card-file PATH]
   aamp-cli dispatch --to EMAIL --title TEXT [--body TEXT] [--priority urgent|high|normal] [--expires-at ISO]
-  aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TEXT] [--error TEXT]
+  aamp-cli result --to EMAIL --task-id ID --status completed|rejected [--output TEXT] [--error TEXT] [--structured-result JSON_ARRAY]
   aamp-cli help --to EMAIL --task-id ID --question TEXT [--reason TEXT] [--option TEXT]...
   aamp-cli cancel --to EMAIL --task-id ID [--body TEXT]
   aamp-cli card-query --to EMAIL [--body TEXT]
@@ -122,8 +123,8 @@ Examples:
   aamp-cli listen --profile default
   aamp-cli directory-search --query reviewer
   aamp-cli dispatch --to agent@meshmail.ai --title "Review this patch" --priority high --body "Please review PR #42"
-  aamp-cli result --to meego@meshmail.ai --task-id 123 --status completed --output "Done"
-  aamp-cli help --to meego@meshmail.ai --task-id 123 --question "Which environment?" --option staging --option production
+  aamp-cli result --to agent@meshmail.ai --task-id 123 --status completed --output "Done"
+  aamp-cli help --to agent@meshmail.ai --task-id 123 --question "Which environment?" --option staging --option production
   aamp-cli cancel --to agent@meshmail.ai --task-id 123 --body "No longer needed"
   aamp-cli card-query --to agent@meshmail.ai --query "What services do you provide?"
   aamp-cli pair --url "aamp://connect?mailbox=agent@meshmail.ai&pair_code=abc123"
@@ -442,6 +443,21 @@ function coerceCliScalar(rawValue: string): unknown {
     }
   }
   return rawValue
+}
+
+function parseStructuredResultArg(rawValue: string): StructuredResultField[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawValue)
+  } catch (err) {
+    throw new Error(`Invalid --structured-result JSON: ${(err as Error).message}`)
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('Expected --structured-result to be a JSON array.')
+  }
+
+  return parsed as StructuredResultField[]
 }
 
 function mergeArgValue(target: Record<string, unknown>, key: string, value: unknown): void {
@@ -832,12 +848,14 @@ export async function runDispatch(args: ParsedArgs): Promise<void> {
 export async function runResult(args: ParsedArgs): Promise<void> {
   const profile = firstArg(args, 'profile') ?? DEFAULT_PROFILE
   const client = createClient(await loadProfile(profile))
+  const structuredResult = firstArg(args, 'structured-result')
   const payload: SendResultOptions = {
     to: requireArg(args, 'to'),
     taskId: requireArg(args, 'task-id'),
     status: requireArg(args, 'status') as 'completed' | 'rejected',
     output: firstArg(args, 'output') ?? '',
     errorMsg: firstArg(args, 'error'),
+    ...(structuredResult ? { structuredResult: parseStructuredResultArg(structuredResult) } : {}),
   }
   await client.sendResult(payload)
   console.log(`Sent task.result for ${payload.taskId}`)

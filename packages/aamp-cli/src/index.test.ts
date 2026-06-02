@@ -160,6 +160,44 @@ describe('aamp-cli helpers', () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"profile": "demo"'))
   })
 
+  it('passes structured results through aamp-cli result', async () => {
+    const profilePath = path.join(tempHome, '.aamp', 'cli', 'profiles', 'default.json')
+    await mkdir(path.dirname(profilePath), { recursive: true })
+    await writeFile(profilePath, JSON.stringify({
+      email: 'agent@meshmail.ai',
+      smtpPassword: 'smtp-1',
+      baseUrl: 'https://meshmail.ai',
+      smtpHost: 'meshmail.ai',
+      smtpPort: 587,
+      rejectUnauthorized: true,
+    }), 'utf8')
+
+    const cli = await import('./index.ts')
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await cli.runResult(cli.parseArgs([
+      'result',
+      '--to', 'agent@meshmail.ai',
+      '--task-id', 'task-1',
+      '--status', 'completed',
+      '--output', 'Done',
+      '--structured-result', '[{"fieldKey":"field_cc2d2b","fieldTypeKey":"select","value":"4fedno4mm"}]',
+    ]))
+
+    const client = fromMailboxIdentity.mock.results[0].value as FakeClient
+    expect(client.sendResult).toHaveBeenCalledWith({
+      to: 'agent@meshmail.ai',
+      taskId: 'task-1',
+      status: 'completed',
+      output: 'Done',
+      errorMsg: undefined,
+      structuredResult: [
+        { fieldKey: 'field_cc2d2b', fieldTypeKey: 'select', value: '4fedno4mm' },
+      ],
+    })
+    expect(logSpy).toHaveBeenCalledWith('Sent task.result for task-1')
+  })
+
   it('node init reuses the default cached mailbox when email is omitted', async () => {
     const profilePath = path.join(tempHome, '.aamp', 'cli', 'profiles', 'default.json')
     await mkdir(path.dirname(profilePath), { recursive: true })
