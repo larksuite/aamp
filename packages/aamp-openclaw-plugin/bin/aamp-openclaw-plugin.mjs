@@ -762,7 +762,8 @@ export async function runInit() {
   const pairing = identityResult.email
     ? createPairingFile({ email: identityResult.email, pairingFile: DEFAULT_PAIRING_FILE })
     : null
-  const qr = pairing ? await renderTerminalQr(pairingUrlToWebUrl(pairing.connectUrl)) : ''
+  const webPairingUrl = pairing ? pairingUrlToWebUrl(pairing.connectUrl) : ''
+  const qr = webPairingUrl ? await renderTerminalQr(webPairingUrl) : ''
 
   const restartResult = restartGateway()
 
@@ -795,7 +796,8 @@ export async function runInit() {
       restartResult.ok
         ? 'Plugin changes should now be active.'
         : 'Please restart the OpenClaw gateway manually for the plugin changes to take effect.',
-      pairing ? `Pairing URL (expires ${pairing.expiresAt}): ${pairing.connectUrl}` : '',
+      pairing ? `Pairing link (expires ${pairing.expiresAt}): ${webPairingUrl}` : '',
+      pairing ? `Pairing URL: ${pairing.connectUrl}` : '',
       qr ? `\n${qr}` : '',
       '',
     ].join('\n'),

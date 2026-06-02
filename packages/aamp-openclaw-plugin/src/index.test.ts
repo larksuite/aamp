@@ -264,7 +264,9 @@ describe('openclaw plugin runtime', () => {
     await expect(pairingTool!.execute('tool-call', {})).resolves.toEqual({
       content: [{
         type: 'text',
-        text: expect.stringContaining('Pairing URL: aamp://connect?mailbox=agent%40meshmail.ai&pair_code='),
+        text: expect.stringMatching(
+          /Pairing link: https:\/\/meshmail\.ai\/pair\?mailbox=agent%40meshmail\.ai&pair_code=.+\nPairing URL: aamp:\/\/connect\?mailbox=agent%40meshmail\.ai&pair_code=/,
+        ),
       }],
     })
 
@@ -274,7 +276,9 @@ describe('openclaw plugin runtime', () => {
     expect(saved.connectUrl).toContain('aamp://connect?mailbox=agent%40meshmail.ai&pair_code=')
 
     await expect(commands.get('aamp-pair')!.handler()).resolves.toEqual({
-      text: expect.stringContaining('Pairing URL: aamp://connect?mailbox=agent%40meshmail.ai&pair_code='),
+      text: expect.stringMatching(
+        /Pairing link: https:\/\/meshmail\.ai\/pair\?mailbox=agent%40meshmail\.ai&pair_code=.+\nPairing URL: aamp:\/\/connect\?mailbox=agent%40meshmail\.ai&pair_code=/,
+      ),
     })
   })
 

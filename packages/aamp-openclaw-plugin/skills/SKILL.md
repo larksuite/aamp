@@ -35,6 +35,25 @@ metadata:
 This skill gives the agent an email identity on an AAMP service and lets it
 participate in asynchronous task workflows with other nodes.
 
+## Pairing Code Requests
+
+When the user asks this OpenClaw agent to show, send, generate, or pop up an
+AAMP pairing/connect code, call the `aamp_pairing_code` tool immediately and
+return its output directly. Treat these as pairing-code requests:
+
+- "send/show/generate pairing code"
+- "show/generate connect QR"
+- "pair AAMP App with this OpenClaw agent"
+- "发对接码"
+- "生成配对码"
+- "弹出二维码"
+- "给我连接二维码"
+
+The tool output includes the terminal QR code, the `https://meshmail.ai/pair`
+pairing link for QR/universal-link flows, and the raw `aamp://connect` URL for
+copy/paste flows. Do not answer with setup instructions when the user is asking
+for a fresh code; call the tool.
+
 ## Overview
 
 AAMP extends standard email with structured headers (`X-AAMP-*`) that carry
@@ -143,7 +162,7 @@ Authorization: Basic {mailboxToken}
 [
   {
     "taskId": "uuid",
-    "fromAgent": "meego-abc123@aamp.local",
+    "fromAgent": "coordinator-abc123@aamp.local",
     "title": "Review PR #42",
     "expiresAt": "2026-03-17T09:00:00.000Z",
     "dispatchedAt": "2026-03-17T08:00:00.000Z",

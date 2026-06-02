@@ -1,5 +1,5 @@
 /**
- * @aamp/openclaw-plugin
+ * aamp-openclaw-plugin
  *
  * OpenClaw plugin that gives the agent an AAMP mailbox identity and lets it
  * receive, process, and reply to AAMP tasks — entirely through standard email.
@@ -840,15 +840,18 @@ export default {
         mailbox: email,
         file: cfg.pairingFile ?? defaultPairingPath(),
       })
-      const qr = await renderTerminalQr(pairingUrlToWebUrl(pairing.connectUrl))
+      const webUrl = pairingUrlToWebUrl(pairing.connectUrl)
+      const qr = await renderTerminalQr(webUrl)
       api.logger.info(`[AAMP] Pair with AAMP App before ${pairing.expiresAt}: ${pairing.connectUrl}`)
+      api.logger.info(`[AAMP] Web pairing link: ${webUrl}`)
       if (qr) api.logger.info(`\n${qr}`)
 
       return [
         `Pair ${email} with AAMP App or another AAMP runtime.`,
         `Expires: ${pairing.expiresAt}`,
         qr ? `\nScan this QR code:\n${qr}` : '\nCould not render a terminal QR code.',
-        `\nPairing URL: ${pairing.connectUrl}`,
+        `\nPairing link: ${webUrl}`,
+        `Pairing URL: ${pairing.connectUrl}`,
       ].join('\n')
     }
 
@@ -1959,7 +1962,8 @@ export default {
       name: 'aamp_pairing_code',
       description:
         'Generate a fresh five-minute AAMP pairing code for this OpenClaw agent and show a QR code. ' +
-        'Use this when the user asks to pair AAMP App or another AAMP runtime with this agent.',
+        'Use this immediately when the user asks for a pairing code, connect code, QR code, pairing link, ' +
+        'invite link, or Chinese requests such as "发对接码", "生成配对码", "弹出二维码", or "给我连接二维码".',
       parameters: { type: 'object', properties: {} },
       execute: async () => ({
         content: [{ type: 'text', text: await renderPairingCodeForCurrentAgent() }],
@@ -2274,7 +2278,7 @@ export default {
 
     api.registerCommand({
       name: 'aamp-pair',
-      description: 'Show a fresh AAMP pairing QR code for this OpenClaw agent',
+      description: 'Show a fresh AAMP pairing QR code, web pairing link, and aamp://connect URL for this OpenClaw agent',
       acceptsArgs: false,
       requireAuth: false,
       handler: async () => ({

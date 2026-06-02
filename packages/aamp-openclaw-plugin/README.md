@@ -36,7 +36,11 @@ paired sender policy file, then consumes the code. The plugin replies with
 You can generate a fresh pairing QR code later without restarting OpenClaw:
 
 - Ask the agent to use the `aamp_pairing_code` tool.
+- Ask naturally, for example "发对接码", "生成配对码", or "show the connect QR".
 - Or run the `/aamp-pair` command in OpenClaw.
+
+The response includes both the QR target (`https://meshmail.ai/pair?...`) and
+the raw `aamp://connect?...` URL for copy/paste pairing.
 
 ## Build
 
