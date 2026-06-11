@@ -124,6 +124,32 @@ function buildRegisteredCommandDispatchPayload(
 
 const DEFAULT_TASK_DISPATCH_CONCURRENCY = 10
 
+function asStreamRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+function normalizeSseStreamEvent(params: {
+  data: unknown
+  streamId: string
+  eventType: string
+  eventId?: string
+  seq: number
+}): AampStreamEvent {
+  const record = asStreamRecord(params.data) ?? {}
+  const payload = asStreamRecord(record.payload) ?? record
+  const seqValue = Number(record.seq)
+  return {
+    id: typeof record.id === 'string' && record.id ? record.id : params.eventId,
+    streamId: String(record.streamId ?? params.streamId),
+    taskId: String(record.taskId ?? ''),
+    seq: Number.isFinite(seqValue) ? seqValue : params.seq,
+    timestamp: String(record.timestamp ?? new Date().toISOString()),
+    type: String(record.type ?? params.eventType ?? 'message') as AampStreamEvent['type'],
+    payload,
+  }
+}
+
 function normalizeTaskDispatchConcurrency(value: number | undefined): number {
   if (value == null) return DEFAULT_TASK_DISPATCH_CONCURRENCY
 
@@ -905,6 +931,7 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
       headers: {
         Authorization: `Basic ${this.config.mailboxToken}`,
         Accept: 'text/event-stream',
+        ...(opts.lastEventId ? { 'Last-Event-ID': opts.lastEventId } : {}),
       },
       signal: controller.signal,
     })
@@ -919,16 +946,19 @@ export class AampClient extends TinyEmitter<AampClientEvents> {
     let currentEvent = 'message'
     let currentId = ''
     let currentData: string[] = []
+    let fallbackSeq = 0
 
     const flush = () => {
       if (!currentData.length) return
       try {
-        const parsed = JSON.parse(currentData.join('\n')) as AampStreamEvent
-        handlers.onEvent({
-          ...parsed,
-          ...(currentId ? { id: currentId } : {}),
-          type: parsed.type ?? currentEvent as AampStreamEvent['type'],
-        })
+        fallbackSeq += 1
+        handlers.onEvent(normalizeSseStreamEvent({
+          data: JSON.parse(currentData.join('\n')) as unknown,
+          streamId,
+          eventType: currentEvent,
+          eventId: currentId || undefined,
+          seq: fallbackSeq,
+        }))
       } catch (err) {
         handlers.onError?.(err as Error)
       } finally {

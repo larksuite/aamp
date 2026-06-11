@@ -7,13 +7,13 @@ import {
   type TaskCancel,
   type TaskDispatch,
 } from 'aamp-sdk'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import type { AgentConfig, BridgeConfig } from './config.js'
 import { CliAgentClient } from './cli-agent-client.js'
 import { resolveCliProfile } from './cli-profiles.js'
 import { buildPrompt, parseResponse, type ResultAttachmentRef } from './prompt-builder.js'
-import { resolveCredentialsFile } from './storage.js'
+import { getBridgeHomeDir, resolveCredentialsFile } from './storage.js'
 import {
   addSenderPolicy,
   consumePairingCode,
@@ -188,6 +188,39 @@ function stringifyStreamPayload(payload: Record<string, unknown>): string {
   return JSON.stringify(payload, null, 2)
 }
 
+function taskLockName(taskId: string): string {
+  return taskId
+    .trim()
+    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 128) || 'task'
+}
+
+function acquireTaskExecutionLock(taskId: string): string | null {
+  const locksDir = join(getBridgeHomeDir(), 'task-locks')
+  const lockDir = join(locksDir, `${taskLockName(taskId)}.lock`)
+  mkdirSync(locksDir, { recursive: true })
+  try {
+    mkdirSync(lockDir)
+    writeFileSync(join(lockDir, 'owner.json'), `${JSON.stringify({
+      pid: process.pid,
+      taskId,
+      acquiredAt: new Date().toISOString(),
+    }, null, 2)}\n`)
+    return lockDir
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EEXIST') return null
+    throw error
+  }
+}
+
+function releaseTaskExecutionLock(lockDir: string | null): void {
+  if (!lockDir) return
+  rmSync(lockDir, { recursive: true, force: true })
+}
+
 export class AgentBridge {
   private client: AampClient | null = null
   private identity: AgentIdentity | null = null
@@ -195,6 +228,7 @@ export class AgentBridge {
   private activeTaskCount = 0
   private pollingFallback = false
   private cancelledTaskIds = new Set<string>()
+  private activeTaskIds = new Set<string>()
   private profileLabel: string
   private streamEnabled: boolean
   private senderPolicies: SenderPolicy[] = []
@@ -361,6 +395,11 @@ export class AgentBridge {
       return
     }
 
+    if (this.activeTaskIds.has(task.taskId)) {
+      console.warn(`[${this.name}] Ignoring duplicate active task ${task.taskId}`)
+      return
+    }
+
     const hydratedTask = await this.client.hydrateTaskDispatch(task).catch((err) => {
       if (!options.historical) {
         console.warn(`[${this.name}] Failed to load thread history for ${task.taskId}: ${(err as Error).message}`)
@@ -399,6 +438,13 @@ export class AgentBridge {
       return
     }
 
+    const taskLockDir = acquireTaskExecutionLock(task.taskId)
+    if (!taskLockDir) {
+      console.warn(`[${this.name}] Ignoring duplicate locked task ${task.taskId}`)
+      return
+    }
+
+    this.activeTaskIds.add(task.taskId)
     this.activeTaskCount += 1
     let activeStream: Awaited<ReturnType<AampClient['createStream']>> | null = null
     let streamOpenedAt: Date | null = null
@@ -661,6 +707,8 @@ export class AgentBridge {
       }).catch(() => {})
     } finally {
       this.activeTaskCount = Math.max(0, this.activeTaskCount - 1)
+      this.activeTaskIds.delete(task.taskId)
+      releaseTaskExecutionLock(taskLockDir)
     }
   }
 

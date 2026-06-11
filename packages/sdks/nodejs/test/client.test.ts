@@ -810,4 +810,79 @@ describe('AampClient', () => {
     expect(received.map((event) => event.text).join('')).toBe(orderedTokens.join(''))
     expect(appendCalls).toHaveLength(orderedTokens.length)
   })
+
+  it('normalizes payload-only SSE stream frames using the SSE event metadata', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/.well-known/aamp') {
+        return new Response(JSON.stringify({
+          api: { url: 'https://meshmail.ai/api/aamp' },
+          capabilities: {
+            stream: {
+              transport: 'sse',
+              getAction: 'aamp.stream.get',
+              subscribeUrlTemplate: '/api/aamp/streams/{streamId}/events',
+            },
+          },
+        }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (url.pathname === '/api/aamp/streams/str-payload-only/events') {
+        const encoder = new TextEncoder()
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(
+              'id: evt-7\n'
+              + 'event: text.delta\n'
+              + 'data: {"delta":"payload-only text"}\n\n',
+            ))
+            controller.close()
+          },
+        }), {
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected fetch URL in payload-only SSE test: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { AampClient } = await import('../src/client.js')
+    const client = new AampClient({
+      email: 'agent@meshmail.ai',
+      mailboxToken: Buffer.from('agent@meshmail.ai:password-1').toString('base64'),
+      baseUrl: 'https://meshmail.ai',
+      fetch: fetchMock,
+    })
+
+    const received: Array<{ id?: string; streamId: string; seq: number; type: string; delta: unknown }> = []
+    const errors: string[] = []
+    await client.subscribeStream('str-payload-only', {
+      onEvent: (event) => {
+        received.push({
+          id: event.id,
+          streamId: event.streamId,
+          seq: event.seq,
+          type: event.type,
+          delta: event.payload.delta,
+        })
+      },
+      onError: (error) => errors.push(error.message),
+    })
+    await waitForNextTick()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(errors).toEqual([])
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain('https://meshmail.ai/api/aamp/streams/str-payload-only/events')
+    expect(received[0]).toEqual({
+      id: 'evt-7',
+      streamId: 'str-payload-only',
+      seq: 1,
+      type: 'text.delta',
+      delta: 'payload-only text',
+    })
+  })
 })

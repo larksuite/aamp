@@ -546,6 +546,22 @@ Common headers:
 - `X-AAMP-SuggestedOptions`
 - `X-AAMP-Card-Summary`
 
+Realtime streams use standard `text/event-stream` SSE frames. Each `data:`
+line should contain a full AAMP stream event JSON object with `streamId`,
+`taskId`, `seq`, `timestamp`, `type`, and `payload`.
+
+Standard stream payload types:
+
+| Type | Canonical payload |
+| --- | --- |
+| `text.delta` | `{ text: string, channel?: "assistant" | "reasoning" | "tool" | "system" | "debug", messageId?: string, sourceEvent?: string }` |
+| `status` | `{ label: string, state?: string, detail?: string }` |
+| `progress` | `{ label: string, value?: number, status?: "pending" | "in_progress" | "running" | "completed" | "failed", toolCallId?: string, title?: string, kind?: string, chunk?: string, locations?: unknown[] }` |
+| `artifact` | `{ label: string, artifactId?: string, filename?: string, contentType?: string, url?: string, size?: number, kind?: string }` |
+| `todo` | `{ items: Array<{ id: string, content: string, status: "pending" \| "in_progress" \| "completed" }>, kind?: "added" \| "updated" \| "resumed", lastChange?: object, counts?: object, summary?: string }` |
+| `error` | `{ message: string, code?: string, error?: string, recoverable?: boolean }` |
+| `done` | `{ status: "completed" | "rejected" | "cancelled", reason?: string, error?: string, output?: string }` |
+
 For protocol details, see:
 
 - [docs/AAMP_CORE_SPECIFICATION.md](./docs/AAMP_CORE_SPECIFICATION.md)

@@ -308,17 +308,40 @@ export class WechatBridgeRuntime {
     const state = this.state.tasks[taskId]
     if (!state || !this.liveTaskIds.has(taskId)) return
     if (event.type === 'text.delta') {
-      state.streamText = (state.streamText ?? '') + String(event.payload.text ?? '')
+      state.streamText = (state.streamText ?? '') + this.readStreamPayloadText(event.payload)
       state.status = 'streaming'
       state.updatedAt = new Date().toISOString()
       await this.persistState()
       return
     }
     if (event.type === 'error') {
-      state.resultError = String(event.payload.message ?? event.payload.error ?? 'Unknown stream error')
+      state.resultError = this.readStreamPayloadString(event.payload, ['message', 'error', 'text']) || 'Unknown stream error'
       state.updatedAt = new Date().toISOString()
       await this.persistState()
     }
+  }
+
+  private readStreamPayloadString(payload: Record<string, unknown>, keys: string[]): string {
+    for (const key of keys) {
+      const value = payload[key]
+      if (typeof value === 'string' && value.length > 0) return value
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+    }
+    return ''
+  }
+
+  private readStreamPayloadText(payload: Record<string, unknown>): string {
+    return this.readStreamPayloadString(payload, [
+      'text',
+      'delta',
+      'text_delta',
+      'textDelta',
+      'content_delta',
+      'contentDelta',
+      'content',
+      'message',
+      'output',
+    ])
   }
 
   private async handleTaskResult(task: TaskResult): Promise<void> {

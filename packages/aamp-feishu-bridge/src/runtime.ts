@@ -2462,7 +2462,7 @@ export class FeishuBridgeRuntime {
 
     if (event.type === 'text.delta') {
       const splitCursor = this.captureStreamCursorForAppend(task, 'text')
-      const text = String(event.payload.text ?? '')
+      const text = this.readStreamPayloadText(event.payload)
       this.appendTextDelta(task, text)
       task.status = 'streaming'
       task.statusLabel = '正在回复...'
@@ -2472,7 +2472,7 @@ export class FeishuBridgeRuntime {
 
     if (event.type === 'status') {
       const splitCursor = this.captureStreamCursorForAppend(task, 'status')
-      task.statusLabel = String(event.payload.label ?? event.payload.stage ?? '正在回复...')
+      task.statusLabel = this.readStreamPayloadString(event.payload, ['label', 'stage', 'state', 'message', 'text']) || '正在回复...'
       await this.updateStreamingCard(taskId, splitCursor)
       return
     }
@@ -2486,14 +2486,14 @@ export class FeishuBridgeRuntime {
         await this.updateStreamingCard(taskId, splitCursor)
         return
       }
-      task.progressLabel = String(event.payload.label ?? '')
+      task.progressLabel = this.readStreamPayloadString(event.payload, ['label', 'message', 'text', 'state', 'value'])
       await this.updateStreamingCard(taskId, splitCursor)
       return
     }
 
     if (event.type === 'error') {
       const splitCursor = this.captureStreamCursorForAppend(task, 'status')
-      task.resultError = String(event.payload.message ?? event.payload.error ?? 'Unknown stream error')
+      task.resultError = this.readStreamPayloadString(event.payload, ['message', 'error', 'text']) || 'Unknown stream error'
       await this.updateStreamingCard(taskId, splitCursor)
       return
     }
@@ -2506,6 +2506,29 @@ export class FeishuBridgeRuntime {
     }
 
     await this.persistState()
+  }
+
+  private readStreamPayloadString(payload: Record<string, unknown>, keys: string[]): string {
+    for (const key of keys) {
+      const value = payload[key]
+      if (typeof value === 'string' && value.length > 0) return value
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+    }
+    return ''
+  }
+
+  private readStreamPayloadText(payload: Record<string, unknown>): string {
+    return this.readStreamPayloadString(payload, [
+      'text',
+      'delta',
+      'text_delta',
+      'textDelta',
+      'content_delta',
+      'contentDelta',
+      'content',
+      'message',
+      'output',
+    ])
   }
 
   private async handleTaskResult(task: TaskResult): Promise<void> {

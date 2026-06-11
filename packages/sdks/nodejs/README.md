@@ -65,8 +65,62 @@ The SDK supports the AAMP realtime stream capability announced from
 
 - `createStream()` creates or reuses the active stream for a task
 - `sendStreamOpened()` sends the mailbox notification intent
-- `appendStreamEvent()` appends `text.delta`, `progress`, `status`, `artifact`, `error`, or `done`
+- `appendStreamEvent()` appends `text.delta`, `progress`, `status`, `artifact`, `todo`, `error`, or `done`
 - `closeStream()` closes the stream before the final `task.result`
+
+Stream events use a stable AAMP envelope:
+
+```ts
+{
+  id: 'evt-1',
+  streamId: 'str_123',
+  taskId: 'task_123',
+  seq: 1,
+  timestamp: '2026-06-10T10:00:00.000Z',
+  type: 'text.delta',
+  payload: { text: 'Hello', channel: 'assistant' },
+}
+```
+
+Custom agents should use these payload shapes so Meego, web, mobile, desktop,
+and bridge cards render consistently:
+
+| Type | Payload fields used by cards |
+| --- | --- |
+| `text.delta` | `{ text: string, channel?: "assistant" | "reasoning" | "tool" | "system" | "debug", messageId?: string }` appends visible agent text. |
+| `status` | `{ label: string, state?: string, detail?: string }` renders a phase line such as "Agent is planning". |
+| `progress` | `{ label: string, value?: number, status?: "pending" | "in_progress" | "running" | "completed" | "failed", toolCallId?: string, title?: string, kind?: string, chunk?: string }` renders tool/progress activity. |
+| `artifact` | `{ label: string, artifactId?: string, filename?: string, contentType?: string, url?: string, size?: number, kind?: string }` announces a produced artifact. |
+| `todo` | `{ items: Array<{ id: string, content: string, status: "pending" | "in_progress" | "completed" }>, kind?: "added" | "updated" | "resumed", lastChange?: object, counts?: object, summary?: string }` updates the pinned task list in agent cards. |
+| `error` | `{ message: string, code?: string, recoverable?: boolean }` renders a stream error. |
+| `done` | `{ status: "completed" | "rejected" | "cancelled", reason?: string, error?: string, output?: string }` marks the observation stream terminal. The authoritative completion is still `task.result`. |
+
+Minimal custom-agent stream:
+
+```ts
+await client.appendStreamEvent({
+  streamId: stream.streamId,
+  type: 'status',
+  payload: { label: 'Agent is planning', state: 'running' },
+})
+
+await client.appendStreamEvent({
+  streamId: stream.streamId,
+  type: 'text.delta',
+  payload: { text: 'I found the issue.', channel: 'assistant' },
+})
+
+await client.appendStreamEvent({
+  streamId: stream.streamId,
+  type: 'progress',
+  payload: { label: 'Tool completed: tests', status: 'completed', toolCallId: 'tests' },
+})
+
+await client.closeStream({
+  streamId: stream.streamId,
+  payload: { status: 'completed', reason: 'task.result' },
+})
+```
 
 ## Self-register a mailbox identity
 

@@ -40,18 +40,29 @@ function normalizeEventType(value: unknown): string | undefined {
 
 export function normalizeCliStreamEvent(event: CliStreamEvent): ParsedCliStreamUpdate {
   const record = asRecord(event.data)
-  const type = event.type
+  const payloadRecord = asRecord(record?.payload) ?? asRecord(record?.data) ?? record
+  const type = event.type === 'message'
+    ? normalizeEventType(record?.type)
+      ?? normalizeEventType(record?.event)
+      ?? normalizeEventType(record?.kind)
+      ?? normalizeEventType(record?.sse_type)
+      ?? event.type
+    : event.type
 
-  const textDelta = firstString(record, ['delta', 'text_delta', 'textDelta', 'content_delta'])
-    ?? (['delta', 'text.delta'].includes(type) ? firstString(record, ['text', 'content', 'message']) : undefined)
-    ?? (type === 'text' ? firstString(record, ['text', 'content', 'message']) : undefined)
+  const textDelta = firstString(payloadRecord, ['delta', 'text_delta', 'textDelta', 'content_delta', 'contentDelta'])
+    ?? (['delta', 'text.delta'].includes(type) ? firstString(payloadRecord, ['text', 'content', 'message', 'output']) : undefined)
+    ?? (type === 'text' ? firstString(payloadRecord, ['text', 'content', 'message', 'output']) : undefined)
 
   const finalText = ['result', 'final', 'output', 'message'].includes(type)
-    ? firstString(record, ['output', 'text', 'content', 'message'])
+    ? firstString(payloadRecord, ['output', 'text', 'content', 'message'])
     : undefined
 
   return {
-    event,
+    event: {
+      ...event,
+      type,
+      data: payloadRecord ?? event.data,
+    },
     ...(textDelta ? { textDelta } : {}),
     ...(finalText ? { finalText } : {}),
   }

@@ -404,9 +404,35 @@ A stream-capable executor MAY send `task.stream.opened` after creating a stream 
 
 The discovery document SHOULD advertise stream capability metadata, including transport type and a subscription URL template. Stream implementations SHOULD support replay after reconnect through event identifiers or equivalent cursor semantics.
 
-### 9.4 Recommended Event Types
+### 9.4 Standard Stream Event Payloads
 
-Implementations commonly expose `text.delta`, `progress`, `status`, `artifact`, `error`, and `done`. This document does not mandate a complete payload schema for each event type, but future standards work may define one.
+Stream events MUST be append-only and monotonically ordered within a stream. The SSE `data:` field SHOULD contain the complete `StreamEvent` JSON:
+
+```json
+{
+  "id": "evt-1",
+  "streamId": "str_123",
+  "taskId": "task_123",
+  "seq": 1,
+  "timestamp": "2026-06-10T10:00:00.000Z",
+  "type": "text.delta",
+  "payload": { "text": "Hello", "channel": "assistant" }
+}
+```
+
+The following payload schemas are the standard rendering contract for AAMP-compatible cards and clients:
+
+| Event type | Required payload | Optional payload | Rendering expectation |
+| --- | --- | --- | --- |
+| `text.delta` | `text: string` | `channel?: "assistant" \| "reasoning" \| "tool" \| "system" \| "debug" \| string`, `messageId?: string`, `sourceEvent?: string` | Append visible text to the running transcript. |
+| `status` | `label: string` | `state?: string`, `detail?: string` | Render a phase/status line. |
+| `progress` | `label: string` | `value?: number` from 0 to 1, `status?: "pending" \| "in_progress" \| "running" \| "completed" \| "failed" \| string`, `toolCallId?: string`, `title?: string`, `kind?: string`, `chunk?: string`, `locations?: unknown[]` | Render tool or execution progress. |
+| `artifact` | `label: string` | `artifactId?: string`, `filename?: string`, `contentType?: string`, `url?: string`, `size?: number`, `kind?: string` | Render or link a produced artifact. |
+| `todo` | `items: Array<{ id: string, content: string, status: "pending" \| "in_progress" \| "completed" \| string }>` | `kind?: "added" \| "updated" \| "resumed" \| string`, `lastChange?: { id?: string, previousStatus?: string, status?: string }`, `counts?: { total?: number, pending?: number, inProgress?: number, completed?: number }`, `summary?: string` | Update a task checklist. Agent cards MAY pin the latest todo list outside the scrollable transcript. |
+| `error` | `message: string` | `code?: string`, `error?: string`, `recoverable?: boolean` | Render a stream-level error. |
+| `done` | `status: "completed" \| "rejected" \| "cancelled" \| string` | `reason?: string`, `error?: string`, `output?: string` | Mark the observation stream terminal. The authoritative completion remains the `task.result` mail message. |
+
+Receivers MAY accept legacy or provider-native aliases such as `delta`, `content_delta`, `contentDelta`, `content`, or `message` for text, but new producers SHOULD emit the canonical fields above.
 
 ## 10. Security Considerations
 

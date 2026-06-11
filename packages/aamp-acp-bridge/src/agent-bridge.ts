@@ -16,10 +16,10 @@ import {
 } from './acpx-client.js'
 import { buildPrompt, parseResponse, type ResultAttachmentRef } from './prompt-builder.js'
 import type { AgentConfig } from './config.js'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { resolveCredentialsFile } from './storage.js'
+import { getBridgeHomeDir, resolveCredentialsFile } from './storage.js'
 import {
   addSenderPolicy,
   consumePairingCode,
@@ -173,6 +173,30 @@ function formatPlanUpdate(entries: AcpPlanEntry[]): string {
   return `[plan]\n${lines.join('\n')}`
 }
 
+function normalizePlanStatus(status?: string): string {
+  const value = status?.toLowerCase()
+  if (value === 'completed' || value === 'done' || value === 'success') return 'completed'
+  if (value === 'in_progress' || value === 'running' || value === 'active') return 'in_progress'
+  return 'pending'
+}
+
+function buildTodoPayloadFromPlan(entries: AcpPlanEntry[]) {
+  return {
+    kind: 'resumed',
+    items: entries.map((entry, index) => ({
+      id: `plan-${index + 1}`,
+      content: entry.content,
+      status: normalizePlanStatus(entry.status),
+    })),
+    counts: {
+      total: entries.length,
+      pending: entries.filter((entry) => normalizePlanStatus(entry.status) === 'pending').length,
+      inProgress: entries.filter((entry) => normalizePlanStatus(entry.status) === 'in_progress').length,
+      completed: entries.filter((entry) => normalizePlanStatus(entry.status) === 'completed').length,
+    },
+  }
+}
+
 function renderTextChunk(chunk: AcpTextChunk, state: StreamTextRenderState): string {
   if (!chunk.text) return ''
 
@@ -302,6 +326,39 @@ function fillStructuredResultAttachmentFilenames(
       attachmentFilenames: filenames,
     }
   })
+}
+
+function taskLockName(taskId: string): string {
+  return taskId
+    .trim()
+    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 128) || 'task'
+}
+
+function acquireTaskExecutionLock(taskId: string): string | null {
+  const locksDir = join(getBridgeHomeDir(), 'task-locks')
+  const lockDir = join(locksDir, `${taskLockName(taskId)}.lock`)
+  mkdirSync(locksDir, { recursive: true })
+  try {
+    mkdirSync(lockDir)
+    writeFileSync(join(lockDir, 'owner.json'), `${JSON.stringify({
+      pid: process.pid,
+      taskId,
+      acquiredAt: new Date().toISOString(),
+    }, null, 2)}\n`)
+    return lockDir
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EEXIST') return null
+    throw error
+  }
+}
+
+function releaseTaskExecutionLock(lockDir: string | null): void {
+  if (!lockDir) return
+  rmSync(lockDir, { recursive: true, force: true })
 }
 
 /**
@@ -608,6 +665,12 @@ export class AgentBridge {
       return
     }
 
+    const taskLockDir = acquireTaskExecutionLock(task.taskId)
+    if (!taskLockDir) {
+      console.warn(`[${this.name}] Ignoring duplicate locked task ${task.taskId}`)
+      return
+    }
+
     this.activeTaskIds.add(task.taskId)
     this.activeTaskCount += 1
     const taskSessionName = this.resolveTaskSessionName(hydratedTask)
@@ -624,7 +687,7 @@ export class AgentBridge {
     } | null = null
 
     const queueStreamAppend = (
-      type: 'text.delta' | 'progress' | 'status',
+      type: 'text.delta' | 'progress' | 'status' | 'todo',
       payload: Record<string, unknown>,
     ) => {
       if (!this.client || !activeStream || streamClosed) return
@@ -633,7 +696,7 @@ export class AgentBridge {
       let write: Promise<void>
       write = this.client.appendStreamEvent({
         streamId,
-        type,
+        type: type as never,
         payload,
       })
         .then(() => undefined)
@@ -726,7 +789,7 @@ export class AgentBridge {
     }
 
     const appendStreamEvent = async (
-      type: 'text.delta' | 'progress' | 'status',
+      type: 'text.delta' | 'progress' | 'status' | 'todo',
       payload: Record<string, unknown>,
     ) => {
       if (!this.client || !activeStream || streamClosed) return
@@ -735,7 +798,7 @@ export class AgentBridge {
       try {
         await this.client.appendStreamEvent({
           streamId: activeStream.streamId,
-          type,
+          type: type as never,
           payload,
         })
       } catch (err) {
@@ -820,14 +883,8 @@ export class AgentBridge {
           })
         },
         onPlanUpdate: (entries) => {
-          queuePhaseStatus('thought')
-          queueTextDelta({
-            text: `${streamTextState.hasContent ? '\n\n' : ''}${formatPlanUpdate(entries)}`,
-            channel: 'thought',
-          })
-          streamTextState.hasContent = true
-          streamTextState.currentChannel = 'thought'
-          streamTextState.currentMessageId = undefined
+          flushPendingTextDelta()
+          queueStreamAppend('todo', buildTodoPayloadFromPlan(entries))
         },
       })
       if (this.cancelledTaskIds.has(task.taskId)) {
@@ -938,6 +995,7 @@ export class AgentBridge {
     } finally {
       this.activeTaskCount = Math.max(0, this.activeTaskCount - 1)
       this.activeTaskIds.delete(task.taskId)
+      releaseTaskExecutionLock(taskLockDir)
     }
   }
 

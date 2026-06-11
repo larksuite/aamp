@@ -558,8 +558,120 @@ export type AampStreamEventType =
   | 'progress'
   | 'status'
   | 'artifact'
+  | 'todo'
   | 'error'
   | 'done'
+
+export type AampStreamTextChannel =
+  | 'assistant'
+  | 'reasoning'
+  | 'tool'
+  | 'system'
+  | 'debug'
+  | (string & {})
+
+export type AampStreamProgressStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | (string & {})
+
+export type AampStreamDoneStatus =
+  | 'completed'
+  | 'rejected'
+  | 'cancelled'
+  | (string & {})
+
+export type AampTodoItemStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | (string & {})
+
+export interface AampTextDeltaStreamPayload {
+  text: string
+  channel?: AampStreamTextChannel
+  messageId?: string
+  sourceEvent?: string
+}
+
+export interface AampStatusStreamPayload {
+  label: string
+  state?: string
+  detail?: string
+}
+
+export interface AampProgressStreamPayload {
+  label: string
+  value?: number
+  status?: AampStreamProgressStatus
+  toolCallId?: string
+  title?: string
+  kind?: string
+  chunk?: string
+  locations?: unknown[]
+}
+
+export interface AampArtifactStreamPayload {
+  label: string
+  artifactId?: string
+  filename?: string
+  contentType?: string
+  url?: string
+  size?: number
+  kind?: string
+}
+
+export interface AampTodoStreamItem {
+  id: string
+  content: string
+  status: AampTodoItemStatus
+  createdAtMs?: number
+  updatedAtMs?: number
+}
+
+export interface AampTodoStreamPayload {
+  items: AampTodoStreamItem[]
+  kind?: 'added' | 'updated' | 'resumed' | 'completed' | 'in_progress' | (string & {})
+  lastChange?: {
+    id?: string
+    previousStatus?: AampTodoItemStatus
+    status?: AampTodoItemStatus
+  }
+  counts?: {
+    total?: number
+    pending?: number
+    inProgress?: number
+    completed?: number
+  }
+  summary?: string
+}
+
+export interface AampErrorStreamPayload {
+  message: string
+  code?: string
+  error?: string
+  recoverable?: boolean
+}
+
+export interface AampDoneStreamPayload {
+  status: AampStreamDoneStatus
+  reason?: string
+  error?: string
+  output?: string
+}
+
+export interface AampStreamPayloadByType {
+  'text.delta': AampTextDeltaStreamPayload
+  progress: AampProgressStreamPayload
+  status: AampStatusStreamPayload
+  artifact: AampArtifactStreamPayload
+  todo: AampTodoStreamPayload
+  error: AampErrorStreamPayload
+  done: AampDoneStreamPayload
+}
 
 export interface AampStreamEvent {
   id?: string
