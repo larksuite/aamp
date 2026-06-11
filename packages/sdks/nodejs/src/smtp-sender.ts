@@ -356,20 +356,15 @@ export class SmtpSender {
     return data.methodResponses ?? []
   }
 
-  private async uploadSentAttachment(attachment: {
-    filename: string
+  private async uploadJmapBlob(params: {
+    content: Buffer
     contentType: string
-    content: Buffer | string
   }): Promise<{
     blobId: string
     type: string
     size: number
-    name: string
   }> {
     const session = await this.resolveJmapSession()
-    const content = typeof attachment.content === 'string'
-      ? Buffer.from(attachment.content, 'base64')
-      : attachment.content
     const uploadUrl = session.uploadUrl
       .replace(/\{accountId\}|%7BaccountId%7D/gi, encodeURIComponent(session.accountId))
 
@@ -377,31 +372,119 @@ export class SmtpSender {
       method: 'POST',
       headers: {
         Authorization: this.getJmapAuthHeader(),
-        'Content-Type': attachment.contentType,
+        'Content-Type': params.contentType,
       },
-      body: content as unknown as BodyInit,
+      body: params.content as unknown as BodyInit,
     })
 
     const bodyText = await res.text()
     if (!res.ok) {
-      throw new Error(`JMAP attachment upload failed: ${res.status} ${bodyText}`)
+      throw new Error(`JMAP blob upload failed: ${res.status} ${bodyText}`)
     }
 
     let data: { blobId?: string; type?: string; size?: number }
     try {
       data = JSON.parse(bodyText) as { blobId?: string; type?: string; size?: number }
     } catch {
-      throw new Error('JMAP attachment upload returned invalid JSON')
+      throw new Error('JMAP blob upload returned invalid JSON')
     }
     if (!data.blobId) {
-      throw new Error('JMAP attachment upload did not return blobId')
+      throw new Error('JMAP blob upload did not return blobId')
     }
 
     return {
       blobId: data.blobId,
-      type: data.type ?? attachment.contentType,
-      size: data.size ?? content.byteLength,
-      name: attachment.filename,
+      type: data.type ?? params.contentType,
+      size: data.size ?? params.content.byteLength,
+    }
+  }
+
+  private async buildRawSentMessage(params: {
+    from: string
+    to: string
+    subject: string
+    text: string
+    aampHeaders: Record<string, string>
+    messageId?: string
+    inReplyTo?: string
+    references?: string
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer | string }>
+  }): Promise<Buffer> {
+    const rawTransport = createTransport({
+      streamTransport: true,
+      buffer: true,
+      newline: 'unix',
+    } as Parameters<typeof createTransport>[0])
+
+    const mailOptions: Record<string, unknown> = {
+      from: params.from,
+      to: params.to,
+      subject: params.subject,
+      text: params.text,
+      headers: params.aampHeaders,
+    }
+    if (params.messageId) mailOptions.messageId = sanitize(params.messageId)
+    if (params.inReplyTo) mailOptions.inReplyTo = params.inReplyTo
+    if (params.references) mailOptions.references = params.references
+    if (params.attachments?.length) {
+      mailOptions.attachments = params.attachments.map((attachment) => ({
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        content: typeof attachment.content === 'string'
+          ? Buffer.from(attachment.content, 'base64')
+          : attachment.content,
+      }))
+    }
+
+    const info = await rawTransport.sendMail(mailOptions)
+    const rawMessage = (info as { message?: unknown }).message
+    if (Buffer.isBuffer(rawMessage)) return rawMessage
+    if (rawMessage instanceof Uint8Array) return Buffer.from(rawMessage)
+    if (typeof rawMessage === 'string') return Buffer.from(rawMessage)
+    throw new Error('Raw message generation did not return a Buffer')
+  }
+
+  private async importRawSentMessage(params: {
+    from: string
+    to: string
+    subject: string
+    text: string
+    aampHeaders: Record<string, string>
+    messageId?: string
+    inReplyTo?: string
+    references?: string
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer | string }>
+  }): Promise<void> {
+    if (!this.canPersistSentCopy()) return
+
+    const sentMailboxId = await this.getSentMailboxId()
+    if (!sentMailboxId) return
+
+    const rawMessage = await this.buildRawSentMessage(params)
+    const uploadedMessage = await this.uploadJmapBlob({
+      content: rawMessage,
+      contentType: 'message/rfc822',
+    })
+    const responses = await this.jmapCall([
+      [
+        'Email/import',
+        {
+          emails: {
+            sent1: {
+              blobId: uploadedMessage.blobId,
+              mailboxIds: { [sentMailboxId]: true },
+              keywords: { '$seen': true },
+            },
+          },
+        },
+        'import1',
+      ],
+    ])
+    const result = responses.find(([name]) => name === 'Email/import')?.[1] as
+      | { imported?: Record<string, unknown>; notImported?: Record<string, unknown> }
+      | undefined
+    if (result?.notImported?.sent1) {
+      throw new Error(`JMAP sent message import failed: ${JSON.stringify(result.notImported.sent1)}`)
     }
   }
 
@@ -440,12 +523,13 @@ export class SmtpSender {
   }): Promise<void> {
     if (!this.canPersistSentCopy()) return
 
+    if (params.attachments?.length) {
+      await this.importRawSentMessage(params)
+      return
+    }
+
     const sentMailboxId = await this.getSentMailboxId()
     if (!sentMailboxId) return
-
-    const uploadedAttachments = params.attachments?.length
-      ? await Promise.all(params.attachments.map((attachment) => this.uploadSentAttachment(attachment)))
-      : []
 
     const emailCreate: Record<string, unknown> = {
       mailboxIds: { [sentMailboxId]: true },
@@ -455,35 +539,13 @@ export class SmtpSender {
       keywords: { '$seen': true },
     }
 
-    if (uploadedAttachments.length) {
-      emailCreate.bodyStructure = {
-        type: 'multipart/mixed',
-        subParts: [
-          { partId: 'body', type: 'text/plain' },
-          ...uploadedAttachments.map((attachment) => ({
-            blobId: attachment.blobId,
-            type: attachment.type,
-            size: attachment.size,
-            name: attachment.name,
-            disposition: 'attachment',
-          })),
-        ],
-      }
-      emailCreate.bodyValues = {
-        body: {
-          value: params.text,
-          isTruncated: false,
-        },
-      }
-    } else {
-      emailCreate.bodyValues = {
-        body: {
-          value: params.text,
-          charset: 'utf-8',
-        },
-      }
-      emailCreate.textBody = [{ partId: 'body', type: 'text/plain' }]
+    emailCreate.bodyValues = {
+      body: {
+        value: params.text,
+        charset: 'utf-8',
+      },
     }
+    emailCreate.textBody = [{ partId: 'body', type: 'text/plain' }]
 
     if (params.inReplyTo) {
       emailCreate['header:In-Reply-To:asText'] = ` ${sanitize(params.inReplyTo)}`

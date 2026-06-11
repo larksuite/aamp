@@ -34,16 +34,20 @@ describe('SmtpSender', () => {
       })))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         accountId: 'acc1',
-        blobId: 'blob-context',
-        type: 'text/plain',
-        size: Buffer.from('hello world').byteLength,
+        blobId: 'blob-raw-message',
+        type: 'message/rfc822',
+        size: Buffer.from('raw sent message').byteLength,
       })))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         methodResponses: [
-          ['Email/set', { created: { sent1: { id: 'created-1' } } }, 'sent1'],
+          ['Email/import', { imported: { sent1: { id: 'created-1' } } }, 'import1'],
         ],
       })))
     vi.stubGlobal('fetch', fetchMock)
+    fakeTransport.sendMail.mockResolvedValueOnce({
+      messageId: 'raw-msg-1',
+      message: Buffer.from('raw sent message'),
+    })
 
     const { SmtpSender } = await import('../src/smtp-sender.js')
     const sender = SmtpSender.fromMailboxIdentity({
@@ -65,7 +69,17 @@ describe('SmtpSender', () => {
     })
 
     expect(result.messageId).toBe('http-msg-1')
-    expect(fakeTransport.sendMail).not.toHaveBeenCalled()
+    expect(fakeTransport.sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      from: 'agent@meshmail.ai',
+      to: 'dispatcher@meshmail.ai',
+      subject: '[AAMP Task] Review docs',
+      messageId: 'http-msg-1',
+      attachments: [expect.objectContaining({
+        filename: 'context.txt',
+        contentType: 'text/plain',
+        content: Buffer.from('hello world'),
+      })],
+    }))
     const payload = JSON.parse(String(fetchMock.mock.calls[1][1]?.body))
     expect(payload.to).toBe('dispatcher@meshmail.ai')
     expect(payload.attachments).toEqual([{
@@ -78,27 +92,15 @@ describe('SmtpSender', () => {
     expect(String(fetchMock.mock.calls[3][0])).toBe('https://meshmail.ai/jmap/')
     expect(String(fetchMock.mock.calls[4][0])).toBe('https://meshmail.ai/jmap/upload/acc1/')
     expect(fetchMock.mock.calls[4][1]?.headers).toEqual(expect.objectContaining({
-      'Content-Type': 'text/plain',
+      'Content-Type': 'message/rfc822',
     }))
     expect(String(fetchMock.mock.calls[5][0])).toBe('https://meshmail.ai/jmap/')
     const sentPayload = JSON.parse(String(fetchMock.mock.calls[5][1]?.body))
-    expect(sentPayload.methodCalls[0][0]).toBe('Email/set')
-    expect(sentPayload.methodCalls[0][1].create.sent1.mailboxIds).toEqual({ 'sent-box': true })
-    expect(sentPayload.methodCalls[0][1].create.sent1.subject).toBe('[AAMP Task] Review docs')
-    expect(sentPayload.methodCalls[0][1].create.sent1['header:Message-ID:asText']).toBe(' http-msg-1')
-    expect(sentPayload.methodCalls[0][1].create.sent1.textBody).toBeUndefined()
-    expect(sentPayload.methodCalls[0][1].create.sent1.bodyStructure).toEqual({
-      type: 'multipart/mixed',
-      subParts: [
-        { partId: 'body', type: 'text/plain' },
-        {
-          blobId: 'blob-context',
-          type: 'text/plain',
-          size: Buffer.from('hello world').byteLength,
-          name: 'context.txt',
-          disposition: 'attachment',
-        },
-      ],
+    expect(sentPayload.methodCalls[0][0]).toBe('Email/import')
+    expect(sentPayload.methodCalls[0][1].emails.sent1).toEqual({
+      blobId: 'blob-raw-message',
+      mailboxIds: { 'sent-box': true },
+      keywords: { '$seen': true },
     })
   })
 
