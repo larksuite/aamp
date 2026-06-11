@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -177,7 +177,7 @@ describe('aamp-cli helpers', () => {
 
     await cli.runResult(cli.parseArgs([
       'result',
-      '--to', 'agent@meshmail.ai',
+      '--to', 'meego@meshmail.ai',
       '--task-id', 'task-1',
       '--status', 'completed',
       '--output', 'Done',
@@ -186,7 +186,7 @@ describe('aamp-cli helpers', () => {
 
     const client = fromMailboxIdentity.mock.results[0].value as FakeClient
     expect(client.sendResult).toHaveBeenCalledWith({
-      to: 'agent@meshmail.ai',
+      to: 'meego@meshmail.ai',
       taskId: 'task-1',
       status: 'completed',
       output: 'Done',
@@ -198,7 +198,46 @@ describe('aamp-cli helpers', () => {
     expect(logSpy).toHaveBeenCalledWith('Sent task.result for task-1')
   })
 
-  it('node init reuses the default cached mailbox when email is omitted', async () => {
+  it('node init keeps node mailbox credentials separate from the default CLI profile', async () => {
+    const profilePath = path.join(tempHome, '.aamp', 'cli', 'profiles', 'default.json')
+    await mkdir(path.dirname(profilePath), { recursive: true })
+    await writeFile(profilePath, JSON.stringify({
+      email: 'cached@meshmail.ai',
+      smtpPassword: 'cached-smtp',
+      baseUrl: 'https://meshmail.ai',
+      smtpHost: 'meshmail.ai',
+      smtpPort: 587,
+      rejectUnauthorized: true,
+    }), 'utf8')
+    registerMailbox.mockResolvedValue({
+      email: 'node-worker@meshmail.ai',
+      smtpPassword: 'node-smtp',
+      mailboxToken: 'mailbox-token',
+      baseUrl: 'https://meshmail.ai',
+    })
+
+    const cli = await import('./index.ts')
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await cli.runNodeInit(cli.parseArgs([
+      'node', 'init',
+      '--yes',
+      '--host', 'https://meshmail.ai',
+      '--slug', 'node-worker',
+      '--no-qr',
+    ]))
+
+    const nodeConfig = JSON.parse(readFileSync(path.join(tempHome, '.aamp', 'cli', 'nodes', 'default.json'), 'utf8'))
+    const cliProfile = JSON.parse(readFileSync(profilePath, 'utf8'))
+    expect(nodeConfig.mailbox.email).toBe('node-worker@meshmail.ai')
+    expect(cliProfile.email).toBe('cached@meshmail.ai')
+    expect(registerMailbox).toHaveBeenCalledWith(expect.objectContaining({
+      aampHost: 'https://meshmail.ai',
+      slug: 'node-worker',
+    }))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Registered new node mailbox node-worker@meshmail.ai'))
+  })
+
+  it('node init can explicitly reuse a CLI mailbox profile', async () => {
     const profilePath = path.join(tempHome, '.aamp', 'cli', 'profiles', 'default.json')
     await mkdir(path.dirname(profilePath), { recursive: true })
     await writeFile(profilePath, JSON.stringify({
@@ -211,14 +250,16 @@ describe('aamp-cli helpers', () => {
     }), 'utf8')
 
     const cli = await import('./index.ts')
-    await cli.runNodeInit(cli.parseArgs(['node', 'init']))
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await cli.runNodeInit(cli.parseArgs(['node', 'init', '--mailbox-profile', 'default', '--no-qr']))
 
     const nodeConfig = JSON.parse(readFileSync(path.join(tempHome, '.aamp', 'cli', 'nodes', 'default.json'), 'utf8'))
     expect(nodeConfig.mailbox.email).toBe('cached@meshmail.ai')
     expect(registerMailbox).not.toHaveBeenCalled()
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"mailbox": "cached@meshmail.ai"'))
   })
 
-  it('migrates legacy ~/.aamp-cli profiles into ~/.aamp/cli transparently', async () => {
+  it('migrates explicitly selected legacy ~/.aamp-cli profiles into ~/.aamp/cli transparently', async () => {
     const legacyProfilePath = path.join(tempHome, '.aamp-cli', 'profiles', 'default.json')
     await mkdir(path.dirname(legacyProfilePath), { recursive: true })
     await writeFile(legacyProfilePath, JSON.stringify({
@@ -231,7 +272,7 @@ describe('aamp-cli helpers', () => {
     }), 'utf8')
 
     const cli = await import('./index.ts')
-    await cli.runNodeInit(cli.parseArgs(['node', 'init']))
+    await cli.runNodeInit(cli.parseArgs(['node', 'init', '--mailbox-profile', 'default', '--no-qr']))
 
     const migratedProfile = JSON.parse(readFileSync(path.join(tempHome, '.aamp', 'cli', 'profiles', 'default.json'), 'utf8'))
     const nodeConfig = JSON.parse(readFileSync(path.join(tempHome, '.aamp', 'cli', 'nodes', 'default.json'), 'utf8'))
@@ -260,9 +301,55 @@ describe('aamp-cli helpers', () => {
     }))
     const nodeConfig = JSON.parse(readFileSync(path.join(tempHome, '.aamp', 'cli', 'nodes', 'default.json'), 'utf8'))
     expect(nodeConfig.mailbox.email).toBe('newly-registered@meshmail.ai')
-    const cachedProfile = JSON.parse(readFileSync(path.join(tempHome, '.aamp', 'cli', 'profiles', 'default.json'), 'utf8'))
-    expect(cachedProfile.email).toBe('newly-registered@meshmail.ai')
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Registered new mailbox newly-registered@meshmail.ai'))
+    expect(existsSync(path.join(tempHome, '.aamp', 'cli', 'profiles', 'default.json'))).toBe(false)
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Registered new node mailbox newly-registered@meshmail.ai'))
+  })
+
+  it('node init can replace an existing node mailbox when requested', async () => {
+    const nodeConfigPath = path.join(tempHome, '.aamp', 'cli', 'nodes', 'default.json')
+    await mkdir(path.dirname(nodeConfigPath), { recursive: true })
+    await writeFile(nodeConfigPath, JSON.stringify({
+      version: 1,
+      mailbox: {
+        email: 'old-node@meshmail.ai',
+        smtpPassword: 'old-smtp',
+        baseUrl: 'https://meshmail.ai',
+        smtpHost: 'meshmail.ai',
+        smtpPort: 587,
+        rejectUnauthorized: true,
+      },
+      commands: [],
+      senderPolicy: {
+        defaultAction: 'deny',
+        allowFrom: [],
+        allowCommands: [],
+        requireContext: {},
+      },
+    }), 'utf8')
+    registerMailbox.mockResolvedValue({
+      email: 'fresh-node@meshmail.ai',
+      smtpPassword: 'fresh-smtp',
+      mailboxToken: 'mailbox-token',
+      baseUrl: 'https://meshmail.ai',
+    })
+
+    const cli = await import('./index.ts')
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await cli.runNodeInit(cli.parseArgs([
+      'node', 'init',
+      '--new-mailbox',
+      '--yes',
+      '--host', 'https://meshmail.ai',
+      '--slug', 'fresh-node',
+      '--no-qr',
+    ]))
+
+    const nodeConfig = JSON.parse(readFileSync(nodeConfigPath, 'utf8'))
+    expect(nodeConfig.mailbox.email).toBe('fresh-node@meshmail.ai')
+    expect(registerMailbox).toHaveBeenCalledWith(expect.objectContaining({
+      slug: 'fresh-node',
+    }))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Registered new node mailbox fresh-node@meshmail.ai'))
   })
 
   it('node command add can build and persist a command interactively', async () => {

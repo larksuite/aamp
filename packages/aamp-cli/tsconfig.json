@@ -5,8 +5,8 @@
     "moduleResolution": "NodeNext",
     "baseUrl": ".",
     "paths": {
-      "aamp-sdk": ["../sdks/nodejs/dist/index.d.ts"],
-      "aamp-sdk/*": ["../sdks/nodejs/dist/*"]
+      "aamp-sdk": ["../sdk/dist/index.d.ts"],
+      "aamp-sdk/*": ["../sdk/dist/*"]
     },
     "outDir": "dist",
     "rootDir": "src",

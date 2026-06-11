@@ -123,8 +123,8 @@ Examples:
   aamp-cli listen --profile default
   aamp-cli directory-search --query reviewer
   aamp-cli dispatch --to agent@meshmail.ai --title "Review this patch" --priority high --body "Please review PR #42"
-  aamp-cli result --to agent@meshmail.ai --task-id 123 --status completed --output "Done"
-  aamp-cli help --to agent@meshmail.ai --task-id 123 --question "Which environment?" --option staging --option production
+  aamp-cli result --to meego@meshmail.ai --task-id 123 --status completed --output "Done"
+  aamp-cli help --to meego@meshmail.ai --task-id 123 --question "Which environment?" --option staging --option production
   aamp-cli cancel --to agent@meshmail.ai --task-id 123 --body "No longer needed"
   aamp-cli card-query --to agent@meshmail.ai --query "What services do you provide?"
   aamp-cli pair --url "aamp://connect?mailbox=agent@meshmail.ai&pair_code=abc123"
@@ -137,14 +137,14 @@ function printNodeUsage(): void {
   console.log(`AAMP CLI Node
 
 Usage:
-  aamp-cli node init [--node NAME] [--mailbox-profile NAME | --email EMAIL --password PASSWORD] [--base-url URL] [--smtp-host HOST] [--smtp-port N] [--reject-unauthorized true|false] [--host URL] [--slug NAME] [--no-start]
+  aamp-cli node init [--node NAME] [--new-mailbox] [--mailbox-profile NAME | --email EMAIL --password PASSWORD] [--base-url URL] [--smtp-host HOST] [--smtp-port N] [--reject-unauthorized true|false] [--host URL] [--slug NAME] [--yes] [--json] [--no-qr] [--no-start]
   aamp-cli node show [--node NAME]
   aamp-cli node pair [--node NAME] [--no-start]
   aamp-cli node serve [--node NAME]
   aamp-cli node sync-card [--node NAME]
   aamp-cli node call [--node NAME | --profile NAME] --target EMAIL --command NAME [--title TEXT] [--stream none|status-only|full] [--task-id ID] [--priority urgent|high|normal] [--expires-at ISO] [--dispatch-context KEY=VALUE]... [--arg KEY=VALUE]... [--attachment SLOT=PATH]... [--any_other_key VALUE]...
   aamp-cli node command list [--node NAME]
-  aamp-cli node command add [--node NAME] [--spec-file PATH] [--env KEY=VALUE]...
+  aamp-cli node command add [--node NAME] [--spec-file PATH] [--env KEY=VALUE]... [--yes]
   aamp-cli node command remove [--node NAME] --command NAME
   aamp-cli node policy show [--node NAME]
   aamp-cli node policy set [--node NAME] [--default-action allow|deny] [--allow-from EMAIL_OR_PATTERN]... [--allow-command NAME]... [--require-context KEY=VALUE]... [--clear-allow-from] [--clear-allow-command] [--clear-require-context]
@@ -979,24 +979,14 @@ async function mailboxConfigFromArgs(args: ParsedArgs): Promise<NodeConfig['mail
     }
   }
 
-  if (existsSync(getNodeConfigPath(nodeName))) {
+  if (!args.booleans.has('new-mailbox') && existsSync(getNodeConfigPath(nodeName))) {
     const existingNode = await loadNodeConfig(nodeName)
     return existingNode.mailbox
   }
 
-  const cachedProfile = await tryLoadProfile(DEFAULT_PROFILE)
-  if (cachedProfile) {
-    return {
-      email: cachedProfile.email,
-      smtpPassword: cachedProfile.smtpPassword,
-      baseUrl: cachedProfile.baseUrl,
-      smtpHost: cachedProfile.smtpHost,
-      smtpPort: cachedProfile.smtpPort,
-      rejectUnauthorized: cachedProfile.rejectUnauthorized,
-    }
-  }
-
-  const shouldRegister = await promptYesNo('No cached mailbox found. Auto-register a new AAMP identity?', true)
+  const shouldRegister = args.booleans.has('yes')
+    || args.booleans.has('auto-register')
+    || await promptYesNo('No node mailbox configured. Auto-register a new AAMP identity for this node?', true)
   if (!shouldRegister) {
     throw new Error('Node init requires mailbox credentials or auto-registration.')
   }
@@ -1014,15 +1004,9 @@ async function mailboxConfigFromArgs(args: ParsedArgs): Promise<NodeConfig['mail
     description: `Registered via aamp-cli node init (${nodeName})`,
   })
   const inferred = deriveServiceDefaults(identity.email)
-  await saveProfile(DEFAULT_PROFILE, {
-    email: identity.email,
-    smtpPassword: identity.smtpPassword,
-    baseUrl: identity.baseUrl,
-    smtpHost: inferred.smtpHost,
-    smtpPort: 587,
-    rejectUnauthorized: true,
-  })
-  console.log(`Registered new mailbox ${identity.email} and saved it to profile "${DEFAULT_PROFILE}"`)
+  if (!args.booleans.has('json')) {
+    console.log(`Registered new node mailbox ${identity.email}`)
+  }
 
   return {
     email: identity.email,
@@ -1260,7 +1244,9 @@ export async function runNodeInit(args: ParsedArgs): Promise<void> {
     pairingExpiresAt: config.pairing.expiresAt,
     summary: createNodeConfigSummary(config),
   }, null, 2))
-  await renderTerminalQr(config.pairing.connectUrl)
+  if (!args.booleans.has('no-qr')) {
+    await renderTerminalQr(config.pairing.connectUrl)
+  }
 }
 
 async function runNodePair(args: ParsedArgs): Promise<void> {
@@ -1277,7 +1263,9 @@ async function runNodePair(args: ParsedArgs): Promise<void> {
     pairingUrl: config.pairing.connectUrl,
     pairingExpiresAt: config.pairing.expiresAt,
   }, null, 2))
-  await renderTerminalQr(config.pairing.connectUrl)
+  if (!args.booleans.has('no-qr')) {
+    await renderTerminalQr(config.pairing.connectUrl)
+  }
 }
 
 async function runNodeShow(args: ParsedArgs): Promise<void> {
@@ -1428,7 +1416,7 @@ async function runNode(args: ParsedArgs): Promise<void> {
       const nodeName = getNodeName(args)
       const config = await loadNodeConfig(nodeName)
       await runNodeServe(nodeName, config, console, { quiet: true })
-    } else {
+    } else if (!args.booleans.has('json')) {
       console.log('Node not started because --no-start was provided.')
       console.log('Run: aamp-cli node serve')
     }
@@ -1444,7 +1432,7 @@ async function runNode(args: ParsedArgs): Promise<void> {
       const nodeName = getNodeName(args)
       const config = await loadNodeConfig(nodeName)
       await runNodeServe(nodeName, config, console, { quiet: true })
-    } else {
+    } else if (!args.booleans.has('json')) {
       console.log('Node not started because --no-start was provided.')
       console.log('Run: aamp-cli node serve')
     }
