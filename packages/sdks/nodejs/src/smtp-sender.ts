@@ -601,6 +601,7 @@ export class SmtpSender {
       taskId,
       priority: opts.priority,
       expiresAt: opts.expiresAt,
+      sessionKey: opts.sessionKey,
       dispatchContext: opts.dispatchContext,
       parentTaskId: opts.parentTaskId,
     })

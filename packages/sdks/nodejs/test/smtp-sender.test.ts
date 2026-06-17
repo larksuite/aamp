@@ -118,6 +118,7 @@ describe('SmtpSender', () => {
       to: 'reviewer@example.com',
       title: 'Review docs',
       bodyText: 'Please check the latest protocol.',
+      sessionKey: 'p2p:ou_sender',
     })
 
     expect(result.messageId).toBe('smtp-msg-1')
@@ -126,6 +127,7 @@ describe('SmtpSender', () => {
       subject: '[AAMP Task] Review docs',
       headers: expect.objectContaining({
         'X-AAMP-Intent': 'task.dispatch',
+        'X-AAMP-Session-Key': 'p2p:ou_sender',
       }),
     }))
   })
