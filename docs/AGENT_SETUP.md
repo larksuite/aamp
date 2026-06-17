@@ -20,16 +20,20 @@ For each requested local agent:
 3. Register or reuse an AAMP mailbox.
 4. Configure sender authorization by either writing `senderPolicies` or
    creating a short-lived pairing URL.
-5. Start the bridge when the user asked you to leave the agent running, or make
-   sure it is configured and ready to start.
+5. Start the bridge and verify it stays running. Without a live bridge, the
+   mailbox exists but the agent cannot consume `pair.request` or
+   `task.dispatch`.
 6. Return:
    - agent name
    - connector type
    - AAMP mailbox email
    - pairing code and `aamp://connect?...` URL, if pairing was created
+   - runtime status, normally `running`
    - whether Meego, Base, or GitHub senders were approved, if applicable
 
-Do not print SMTP passwords, mailbox tokens, or credential JSON contents.
+Do not print SMTP passwords, mailbox tokens, credential JSON contents, web
+pairing URLs, log paths, process IDs, or start/stop commands in the final
+response unless the user explicitly asks for runtime operation details.
 
 ## Connector Choice
 
@@ -134,15 +138,6 @@ Read the JSON output. The important fields are:
 - `agents[0].pairing.connectUrl`
 - `agents[0].credentialsFile`
 
-Start the bridge after initialization:
-
-```bash
-npx -y aamp-acp-bridge start --agent codex
-```
-
-For a background process, use the user's normal process manager or shell
-conventions. Do not leave a required long-running command hidden from the user.
-
 Generate a fresh pairing code later:
 
 ```bash
@@ -194,12 +189,6 @@ printf '%s\n' '{
     }
   ]
 }' | npx -y aamp-cli-bridge init --json --input -
-```
-
-Start the bridge:
-
-```bash
-npx -y aamp-cli-bridge start
 ```
 
 Generate a fresh pairing code later:
@@ -490,12 +479,54 @@ Use the command matching the bridge you configured. Confirm that:
 - config and credential files exist
 - a pairing URL was created, or `senderPolicies` are present
 
-If you start the bridge with JSON logs, expect runtime events on stdout:
+## Runtime Operation
+
+The setup task is not complete until the bridge is running. The mailbox and
+pairing URL are only useful when the bridge process is alive to receive
+`pair.request` and `task.dispatch`.
+
+Prefer the user's existing process manager, AAMP desktop app, or agent hub when
+one is already managing AAMP bridges. Otherwise use a deterministic detached
+session. Do not improvise multiple background strategies unless the first
+supported strategy fails.
+
+Use `screen` when available:
+
+ACP Bridge:
+
+```bash
+AGENT_NAME=codex
+mkdir -p ~/.aamp/logs
+screen -S "aamp-acp-${AGENT_NAME}" -X quit 2>/dev/null || true
+screen -dmS "aamp-acp-${AGENT_NAME}" sh -lc "exec npx -y aamp-acp-bridge start --agent ${AGENT_NAME} --json >> ~/.aamp/logs/aamp-acp-${AGENT_NAME}.log 2>&1"
+sleep 5
+pgrep -fl "aamp-acp-bridge start --agent ${AGENT_NAME}"
+```
+
+CLI Bridge:
+
+```bash
+mkdir -p ~/.aamp/logs
+screen -S "aamp-cli-bridge" -X quit 2>/dev/null || true
+screen -dmS "aamp-cli-bridge" sh -lc "exec npx -y aamp-cli-bridge start --json >> ~/.aamp/logs/aamp-cli-bridge.log 2>&1"
+sleep 5
+pgrep -fl "aamp-cli-bridge start"
+```
+
+If `screen` is unavailable but `tmux` is available, use an equivalent detached
+tmux session. If no detached process manager is available, start the bridge in
+the foreground and clearly report that the runtime is not yet persistent after
+the current terminal session exits.
+
+Foreground commands for debugging:
 
 ```bash
 npx -y aamp-acp-bridge start --agent codex --json
 npx -y aamp-cli-bridge start --json
 ```
+
+After the bridge is running, generate a fresh pairing code if the previous one
+may expire soon.
 
 ## Final Response Template
 
@@ -509,6 +540,7 @@ Connector: aamp-acp-bridge
 Mailbox: codex-bridge-xxxx@meshmail.ai
 Pairing code: abc123xyz
 Pairing URL: aamp://connect?mailbox=codex-bridge-xxxx%40meshmail.ai&pair_code=abc123xyz
+Runtime: running
 [If applicable] Meego and GitHub access: approved all requests from Meego and GitHub.
 ```
 
