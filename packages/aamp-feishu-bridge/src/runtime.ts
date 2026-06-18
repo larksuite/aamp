@@ -1124,6 +1124,7 @@ export class FeishuBridgeRuntime {
     const candidates = [
       typeof payload.title === 'string' ? payload.title.trim() : '',
       labelMatch?.[1]?.trim() ?? '',
+      label,
       typeof payload.kind === 'string' ? payload.kind.trim() : '',
     ].map((candidate) => this.compactToolName(candidate)).filter(Boolean)
 
@@ -1148,6 +1149,7 @@ export class FeishuBridgeRuntime {
   private formatToolStatus(status?: string): string {
     const statusLabelByValue: Record<string, string> = {
       pending: '等待',
+      running: '执行中',
       in_progress: '执行中',
       completed: '完成',
       failed: '失败',
@@ -1165,8 +1167,23 @@ export class FeishuBridgeRuntime {
 
   private formatToolGroupContent(tools: BridgeToolTraceItem[]): string {
     return tools
-      .map((tool) => `- ${tool.name} · ${this.formatToolStatus(tool.status)}`)
+      .map((tool) => {
+        const lines = [`- ${tool.name} · ${this.formatToolStatus(tool.status)}`]
+        if (tool.input) lines.push(...this.formatToolDetailLines('输入', tool.input))
+        if (tool.output) lines.push(...this.formatToolDetailLines('输出', tool.output))
+        return lines.join('\n')
+      })
       .join('\n')
+  }
+
+  private formatToolDetailLines(label: string, value: string): string[] {
+    const lines = value.trim().split(/\r?\n/)
+    if (lines.length === 0 || !lines[0]) return []
+    if (lines.length === 1) return [`  - ${label}: ${lines[0]}`]
+    return [
+      `  - ${label}:`,
+      ...lines.map((line) => `    ${line}`),
+    ]
   }
 
   private buildToolPanelTitle(payload: Record<string, unknown>): string {
@@ -1234,6 +1251,8 @@ export class FeishuBridgeRuntime {
       : undefined
     const incomingName = this.readToolName(payload)
     const status = this.readToolStatus(payload) ?? 'in_progress'
+    const input = this.readStreamPayloadString(payload, ['input'])
+    const output = this.readStreamPayloadString(payload, ['output'])
     let entry = this.findToolEntryForUpdate(entries, toolCallId, incomingName, status)
     if (!entry) {
       entry = {
@@ -1253,12 +1272,16 @@ export class FeishuBridgeRuntime {
     if (existing) {
       if (!this.isGenericToolName(incomingName)) existing.name = incomingName
       existing.status = status
+      if (input) existing.input = input
+      if (output) existing.output = output
     } else {
       const name = this.isGenericToolName(incomingName) && toolCallId ? '工具' : incomingName
       tools.push({
         key,
         name,
         status,
+        ...(input ? { input } : {}),
+        ...(output ? { output } : {}),
       })
     }
 

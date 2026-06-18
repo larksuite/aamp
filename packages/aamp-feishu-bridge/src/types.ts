@@ -40,6 +40,8 @@ export interface BridgeToolTraceItem {
   key: string
   name: string
   status?: string
+  input?: string
+  output?: string
 }
 
 export interface BridgeStreamCursor {
