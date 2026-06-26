@@ -354,7 +354,7 @@ func (s *SmtpSender) SendTask(opts SendTaskOptions) (string, string, error) {
 		taskID = generateID()
 	}
 	priority := firstNonEmpty(opts.Priority, "normal")
-	headers := BuildDispatchHeaders(taskID, priority, opts.ExpiresAt, opts.DispatchContext, opts.ParentTaskID)
+	headers := BuildDispatchHeaders(taskID, priority, opts.ExpiresAt, opts.SessionKey, opts.DispatchContext, opts.ParentTaskID)
 
 	parts := []string{
 		"Task: " + opts.Title,

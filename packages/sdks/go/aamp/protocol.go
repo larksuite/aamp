@@ -24,6 +24,7 @@ const (
 	HeaderStreamID      = "X-AAMP-Stream-Id"
 	HeaderParentTaskID  = "X-AAMP-ParentTaskId"
 	HeaderCardSummary   = "X-AAMP-Card-Summary"
+	HeaderSessionKey    = "X-AAMP-Session-Key"
 )
 
 var dispatchContextKeyRE = regexp.MustCompile(`^[a-z0-9_-]+$`)
@@ -84,7 +85,7 @@ func SerializeDispatchContextHeader(context map[string]string) string {
 	return strings.Join(parts, "; ")
 }
 
-func BuildDispatchHeaders(taskID, priority, expiresAt string, dispatchContext map[string]string, parentTaskID string) map[string]string {
+func BuildDispatchHeaders(taskID, priority, expiresAt, sessionKey string, dispatchContext map[string]string, parentTaskID string) map[string]string {
 	headers := map[string]string{
 		HeaderVersion: AAMPProtocolVersion,
 		HeaderIntent:  "task.dispatch",
@@ -98,6 +99,9 @@ func BuildDispatchHeaders(taskID, priority, expiresAt string, dispatchContext ma
 	}
 	if expiresAt != "" {
 		headers[HeaderExpiresAt] = expiresAt
+	}
+	if trimmed := strings.TrimSpace(sessionKey); trimmed != "" {
+		headers[HeaderSessionKey] = trimmed
 	}
 	if serialized := SerializeDispatchContextHeader(dispatchContext); serialized != "" {
 		headers[HeaderDispatchCtx] = serialized
@@ -208,6 +212,7 @@ func ParseAampHeaders(meta EmailMetadata) (*ParsedMessage, error) {
 		base.Title = strings.TrimSpace(strings.TrimPrefix(subject, "[AAMP Task]"))
 		base.Priority = firstNonEmpty(headers[strings.ToLower(HeaderPriority)], "normal")
 		base.ExpiresAt = headers[strings.ToLower(HeaderExpiresAt)]
+		base.SessionKey = headers[strings.ToLower(HeaderSessionKey)]
 		base.DispatchContext = ParseDispatchContextHeader(headers[strings.ToLower(HeaderDispatchCtx)])
 		base.ParentTaskID = headers[strings.ToLower(HeaderParentTaskID)]
 		base.BodyText = normalizeBodyText(meta.BodyText)

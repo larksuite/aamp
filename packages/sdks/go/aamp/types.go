@@ -102,6 +102,7 @@ type SendTaskOptions struct {
 	BodyText        string
 	Priority        string
 	ExpiresAt       string
+	SessionKey      string
 	DispatchContext map[string]string
 	ParentTaskID    string
 	Attachments     []Attachment
@@ -232,6 +233,7 @@ type ParsedMessage struct {
 	Title            string
 	Priority         string
 	ExpiresAt        string
+	SessionKey       string
 	DispatchContext  map[string]string
 	ParentTaskID     string
 	From             string

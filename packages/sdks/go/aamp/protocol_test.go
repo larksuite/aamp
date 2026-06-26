@@ -16,6 +16,58 @@ func TestDispatchContextRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDispatchSessionKeyRoundTrip(t *testing.T) {
+	headers := BuildDispatchHeaders("task-1", "normal", "", "sess-1", nil, "")
+	if headers[HeaderSessionKey] != "sess-1" {
+		t.Fatalf("expected session key header to be set, got %q", headers[HeaderSessionKey])
+	}
+	message, err := ParseAampHeaders(EmailMetadata{
+		From:      "dispatcher@example.com",
+		To:        "agent@example.com",
+		MessageID: "<msg-1@example.com>",
+		Subject:   "[AAMP Task] Do something",
+		Headers:   headers,
+	})
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if message == nil {
+		t.Fatal("expected parsed message")
+	}
+	if message.SessionKey != "sess-1" {
+		t.Fatalf("expected parsed session key %q, got %q", "sess-1", message.SessionKey)
+	}
+}
+
+func TestDispatchSessionKeyEmpty(t *testing.T) {
+	headers := BuildDispatchHeaders("task-1", "normal", "", "", nil, "")
+	if _, ok := headers[HeaderSessionKey]; ok {
+		t.Fatalf("expected no session key header for empty value")
+	}
+	message, err := ParseAampHeaders(EmailMetadata{
+		From:    "dispatcher@example.com",
+		To:      "agent@example.com",
+		Subject: "[AAMP Task] Do something",
+		Headers: headers,
+	})
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if message == nil {
+		t.Fatal("expected parsed message")
+	}
+	if message.SessionKey != "" {
+		t.Fatalf("expected empty session key, got %q", message.SessionKey)
+	}
+}
+
+func TestDispatchSessionKeyTrimmed(t *testing.T) {
+	headers := BuildDispatchHeaders("task-1", "normal", "", "  sess-trim  ", nil, "")
+	if headers[HeaderSessionKey] != "sess-trim" {
+		t.Fatalf("expected trimmed session key %q, got %q", "sess-trim", headers[HeaderSessionKey])
+	}
+}
+
 func TestParseTaskResult(t *testing.T) {
 	headers := BuildResultHeaders("task-2", "completed", "", []StructuredResultField{
 		{FieldKey: "summary", FieldTypeKey: "text", Value: "done"},

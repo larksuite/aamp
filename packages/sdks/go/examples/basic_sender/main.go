@@ -22,6 +22,9 @@ func main() {
 		Title:    "Prepare a summary",
 		BodyText: "Summarize the latest rollout status.",
 		Priority: "high",
+		// SessionKey reuses the callee's underlying agent session across
+		// multiple task turns; omit it to start a fresh session.
+		SessionKey: "rollout-thread-42",
 	})
 	if err != nil {
 		log.Fatal(err)
