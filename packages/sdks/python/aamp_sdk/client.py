@@ -88,6 +88,8 @@ class AampClient(TinyEmitter):
             "task.help_needed",
             "task.ack",
             "task.stream.opened",
+            "pair.request",
+            "pair.respond",
             "card.query",
             "card.response",
             "reply",

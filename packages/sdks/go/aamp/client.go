@@ -103,6 +103,8 @@ func NewClient(config Config) (*Client, error) {
 		"task.help_needed",
 		"task.ack",
 		"task.stream.opened",
+		"pair.request",
+		"pair.respond",
 		"card.query",
 		"card.response",
 		"reply",
