@@ -10,6 +10,29 @@ import { randomUUID } from 'crypto'
 /** Strip CR/LF to prevent email header injection */
 const sanitize = (s: string) => s.replace(/[\r\n]/g, ' ').trim()
 
+/**
+ * Maximum length (in characters) of the body portion of an email subject —
+ * i.e. the content that follows the `[AAMP Task] `/`[AAMP Card] ` prefix.
+ * Keeps the mail-detail UI from overflowing when a task title or card summary
+ * is excessively long.
+ */
+const SUBJECT_BODY_MAX_LENGTH = 200
+
+/**
+ * Truncate the body portion of an email subject so it never exceeds
+ * {@link SUBJECT_BODY_MAX_LENGTH} characters. When truncation occurs, the body
+ * is cut to the limit and a single `…` (U+2026) ellipsis is appended, making
+ * the resulting body `SUBJECT_BODY_MAX_LENGTH + 1` characters long. The AAMP
+ * prefix (`[AAMP Task] `, `[AAMP Card] `, …) is NOT part of `body` and is
+ * therefore left untouched.
+ *
+ * @param body - The already-sanitized subject body (no leading prefix).
+ */
+function truncateSubject(body: string): string {
+  if (body.length <= SUBJECT_BODY_MAX_LENGTH) return body
+  return `${body.slice(0, SUBJECT_BODY_MAX_LENGTH)}…`
+}
+
 const HTTP_SEND_MAX_ATTEMPTS = 4
 const HTTP_SEND_RETRY_BASE_DELAY_MS = 500
 
@@ -609,7 +632,7 @@ export class SmtpSender {
     const sendMailOpts: Record<string, unknown> = {
       from: this.config.user,
       to: opts.to,
-      subject: `[AAMP Task] ${sanitize(opts.title)}`,
+      subject: `[AAMP Task] ${truncateSubject(sanitize(opts.title))}`,
       text: opts.rawBodyText ?? [
         `Task: ${opts.title}`,
         `Task ID: ${taskId}`,
@@ -1135,7 +1158,7 @@ export class SmtpSender {
     const mailOpts: Record<string, unknown> = {
       from: this.config.user,
       to: opts.to,
-      subject: `[AAMP Card] ${sanitize(opts.summary)}`,
+      subject: `[AAMP Card] ${truncateSubject(sanitize(opts.summary))}`,
       text: opts.bodyText,
       headers: aampHeaders,
     }

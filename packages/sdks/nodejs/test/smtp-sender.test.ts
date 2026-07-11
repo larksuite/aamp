@@ -239,4 +239,80 @@ describe('SmtpSender', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(String(fetchMock.mock.calls[2][0])).toBe('https://meshmail.ai/api/aamp?action=aamp.mailbox.send')
   })
+
+  it('truncates the task title in the subject when it exceeds 200 characters', async () => {
+    const { SmtpSender } = await import('../src/smtp-sender.js')
+    const sender = new SmtpSender({
+      host: 'meshmail.ai',
+      port: 587,
+      user: 'agent@meshmail.ai',
+      password: 'smtp-1',
+    })
+
+    const longTitle = 'A'.repeat(250)
+    fakeTransport.sendMail.mockResolvedValueOnce({ messageId: 'trunc-msg-1' })
+    await sender.sendTask({
+      to: 'reviewer@example.com',
+      title: longTitle,
+      bodyText: 'body',
+    })
+
+    const call = fakeTransport.sendMail.mock.calls[0][0] as { subject: string }
+    const prefix = '[AAMP Task] '
+    expect(call.subject.startsWith(prefix)).toBe(true)
+    const body = call.subject.slice(prefix.length)
+    // truncated body = 200 chars + single ellipsis
+    expect(body.length).toBe(201)
+    expect(body.slice(0, 200)).toBe('A'.repeat(200))
+    expect(body.endsWith('…')).toBe(true)
+    // total subject length capped at prefix + 200 + 1
+    expect(call.subject.length).toBe(prefix.length + 200 + 1)
+  })
+
+  it('leaves a short task title untouched in the subject', async () => {
+    const { SmtpSender } = await import('../src/smtp-sender.js')
+    const sender = new SmtpSender({
+      host: 'meshmail.ai',
+      port: 587,
+      user: 'agent@meshmail.ai',
+      password: 'smtp-1',
+    })
+
+    const shortTitle = 'Quick review'
+    fakeTransport.sendMail.mockResolvedValueOnce({ messageId: 'short-msg-1' })
+    await sender.sendTask({
+      to: 'reviewer@example.com',
+      title: shortTitle,
+      bodyText: 'body',
+    })
+
+    const call = fakeTransport.sendMail.mock.calls[0][0] as { subject: string }
+    expect(call.subject).toBe(`[AAMP Task] ${shortTitle}`)
+  })
+
+  it('truncates the card summary in the subject when it exceeds 200 characters', async () => {
+    const { SmtpSender } = await import('../src/smtp-sender.js')
+    const sender = new SmtpSender({
+      host: 'meshmail.ai',
+      port: 587,
+      user: 'agent@meshmail.ai',
+      password: 'smtp-1',
+    })
+
+    const longSummary = 'S'.repeat(300)
+    fakeTransport.sendMail.mockResolvedValueOnce({ messageId: 'card-trunc-1' })
+    await sender.sendCardResponse({
+      to: 'reviewer@example.com',
+      taskId: 'card-7',
+      summary: longSummary,
+      bodyText: 'body',
+    })
+
+    const call = fakeTransport.sendMail.mock.calls[0][0] as { subject: string }
+    const prefix = '[AAMP Card] '
+    const body = call.subject.slice(prefix.length)
+    expect(body.length).toBe(201)
+    expect(body.slice(0, 200)).toBe('S'.repeat(200))
+    expect(body.endsWith('…')).toBe(true)
+  })
 })
