@@ -23,9 +23,31 @@ class ProtocolTests(unittest.TestCase):
             "task-1",
             priority="urgent",
             dispatch_context={"project_key": "proj-1"},
+            session_key="  p2p:ou_sender  ",
         )
         self.assertEqual(headers["X-AAMP-Intent"], "task.dispatch")
         self.assertEqual(headers["X-AAMP-TaskId"], "task-1")
+        self.assertEqual(headers["X-AAMP-Session-Key"], "p2p:ou_sender")
+
+    def test_dispatch_session_key_round_trip(self) -> None:
+        headers = build_dispatch_headers("task-session", session_key="thread:demo-1")
+        parsed = parse_aamp_headers(
+            {
+                "from": "dispatcher@example.com",
+                "to": "agent@example.com",
+                "subject": "[AAMP Task] Continue task",
+                "messageId": "<msg-session@example.com>",
+                "bodyText": "Continue the previous task.",
+                "headers": headers,
+            }
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["sessionKey"], "thread:demo-1")
+
+    def test_blank_session_key_is_omitted(self) -> None:
+        headers = build_dispatch_headers("task-blank", session_key="   ")
+        self.assertNotIn("X-AAMP-Session-Key", headers)
 
     def test_parse_task_result(self) -> None:
         headers = build_result_headers(

@@ -24,6 +24,7 @@ AAMP_HEADER = {
     "STREAM_ID": "X-AAMP-Stream-Id",
     "PARENT_TASK_ID": "X-AAMP-ParentTaskId",
     "CARD_SUMMARY": "X-AAMP-Card-Summary",
+    "SESSION_KEY": "X-AAMP-Session-Key",
 }
 
 _DISPATCH_CONTEXT_KEY_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -177,6 +178,7 @@ def build_dispatch_headers(
     expires_at: str | None = None,
     dispatch_context: Mapping[str, Any] | None = None,
     parent_task_id: str | None = None,
+    session_key: str | None = None,
 ) -> dict[str, str]:
     headers = {
         AAMP_HEADER["VERSION"]: AAMP_PROTOCOL_VERSION,
@@ -186,6 +188,8 @@ def build_dispatch_headers(
     }
     if expires_at:
         headers[AAMP_HEADER["EXPIRES_AT"]] = expires_at
+    if session_key and session_key.strip():
+        headers[AAMP_HEADER["SESSION_KEY"]] = session_key.strip()
     serialized_context = serialize_dispatch_context_header(dispatch_context)
     if serialized_context:
         headers[AAMP_HEADER["DISPATCH_CONTEXT"]] = serialized_context
@@ -297,7 +301,7 @@ def parse_aamp_headers(meta: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
     if intent == "task.dispatch":
-        return {
+        result = {
             **base,
             "title": subject.replace("[AAMP Task]", "").strip() or subject,
             "priority": headers.get(AAMP_HEADER["PRIORITY"].lower(), "normal"),
@@ -308,6 +312,10 @@ def parse_aamp_headers(meta: Mapping[str, Any]) -> dict[str, Any] | None:
             "parentTaskId": headers.get(AAMP_HEADER["PARENT_TASK_ID"].lower()),
             "bodyText": _normalize_body_text(body_text),
         }
+        session_key_value = headers.get(AAMP_HEADER["SESSION_KEY"].lower())
+        if session_key_value:
+            result["sessionKey"] = session_key_value
+        return result
 
     if intent == "task.cancel":
         return {**base, "bodyText": _normalize_body_text(body_text)}

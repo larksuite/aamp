@@ -365,8 +365,11 @@ class EndToEndTests(unittest.TestCase):
         stream_received = threading.Event()
         result_payload: dict | None = None
         stream_payload: dict | None = None
+        dispatch_payload: dict | None = None
 
         def on_dispatch(task: dict) -> None:
+            nonlocal dispatch_payload
+            dispatch_payload = task
             stream = agent.create_stream(task_id=task["taskId"], peer_email=task["from"])
             agent.send_stream_opened(
                 to=task["from"],
@@ -426,6 +429,7 @@ class EndToEndTests(unittest.TestCase):
             title="Integration test",
             body_text="Please handle this task.",
             priority="high",
+            session_key="demo:continuous-session",
         )
 
         self.assertTrue(task_received.wait(5), "agent did not receive dispatch")
@@ -435,6 +439,8 @@ class EndToEndTests(unittest.TestCase):
 
         assert stream_payload is not None
         assert result_payload is not None
+        assert dispatch_payload is not None
+        self.assertEqual(dispatch_payload["sessionKey"], "demo:continuous-session")
         self.assertEqual(stream_payload["taskId"], task_id)
         self.assertEqual(result_payload["taskId"], task_id)
         self.assertEqual(result_payload["status"], "completed")

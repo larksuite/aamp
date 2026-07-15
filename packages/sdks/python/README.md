@@ -48,6 +48,7 @@ task_id, message_id = client.send_task(
     title="Prepare a summary",
     body_text="Summarize the latest rollout status.",
     priority="high",
+    session_key="conversation:release-demo",
 )
 
 stream = client.create_stream(task_id=task_id, peer_email="dispatcher@example.com")
@@ -88,14 +89,20 @@ message = parse_aamp_headers(
             "X-AAMP-Intent": "task.dispatch",
             "X-AAMP-TaskId": "task-123",
             "X-AAMP-Priority": "high",
+            "X-AAMP-Session-Key": "conversation:release-demo",
         },
     }
 )
 ```
 
+`session_key` is independent from `task_id`: use a stable session key for
+follow-up tasks that should reuse one agent conversation while keeping a new
+task ID for each dispatch. Received `task.dispatch` events expose it as
+`task["sessionKey"]` when the header is present.
+
 ## Run tests
 
 ```bash
-cd packages/sdk-python
+cd packages/sdks/python
 python -m unittest discover -s tests
 ```
