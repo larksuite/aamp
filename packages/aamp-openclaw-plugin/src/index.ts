@@ -514,11 +514,14 @@ function priorityRank(priority: TaskPriority): number {
   }
 }
 
-function hasExpired(task: Pick<PendingTask, 'expiresAt'>): boolean {
+function hasExpired(task: Pick<PendingTask, 'expiresAt' | 'receivedAt'>): boolean {
   if (task.expiresAt) {
     const expiresAtMs = new Date(task.expiresAt).getTime()
     if (Number.isFinite(expiresAtMs) && Date.now() >= expiresAtMs) return true
   }
+  // Fallback: tasks without explicit expiry default to 300s timeout
+  const receivedAtMs = task.receivedAt ? new Date(task.receivedAt).getTime() : 0
+  if (Number.isFinite(receivedAtMs) && Date.now() >= receivedAtMs + 300 * 1e3) return true
   return false
 }
 
@@ -1401,16 +1404,49 @@ export default {
     // (handler == null). gateway_start fires AFTER the heartbeat runner starts,
     // so we re-trigger here to process any tasks queued during startup.
     api.on('gateway_start', () => {
-      if (pendingTasks.size === 0) return
-      api.logger.info(`[AAMP] gateway_start: re-triggering heartbeat for ${pendingTasks.size} pending task(s)`)
-      try {
-        api.runtime.system.requestHeartbeatNow({
-          reason: 'wake',
-          sessionKey: buildAampWakeSessionKey('queue', 'gateway-start'),
-        })
-      } catch (err) {
-        api.logger.warn(`[AAMP] gateway_start heartbeat failed: ${(err as Error).message}`)
+      if (pendingTasks.size > 0) {
+        api.logger.info(`[AAMP] gateway_start: re-triggering heartbeat for ${pendingTasks.size} pending task(s)`)
+        try {
+          api.runtime.system.requestHeartbeatNow({
+            reason: 'wake',
+            sessionKey: buildAampWakeSessionKey('queue', 'gateway-start'),
+          })
+        } catch (err) {
+          api.logger.warn(`[AAMP] gateway_start heartbeat failed: ${(err as Error).message}`)
+        }
       }
+
+      // Periodic cleanup: scan pending tasks every 60s and auto-reject expired ones.
+      // This prevents tasks without an explicit expiresAt from hanging forever when
+      // the LLM idle-timeout fires and no new prompt is built.
+      setInterval(() => {
+        if (pendingTasks.size === 0) return
+        for (const [id, t] of pendingTasks) {
+          if (hasExpired(t)) {
+            if (!isSyntheticPendingKey(id) && aampClient?.isConnected()) {
+              void aampClient.sendResult({
+                to: t.from,
+                taskId: t.taskId,
+                status: 'rejected',
+                output: '',
+                errorMsg: t.expiresAt
+                  ? 'Task expired before the agent could complete it.'
+                  : 'Task timed out while waiting for agent completion or follow-up input.',
+                inReplyTo: t.messageId || undefined,
+              }).then(() => {
+                rememberTerminalTask(t.taskId)
+                api.logger.warn(`[AAMP] Task ${id} expired — sent rejected result to dispatcher`)
+              }).catch((err: Error) => {
+                api.logger.error(`[AAMP] Task ${id} expired — failed to notify dispatcher: ${err.message}`)
+              })
+            } else {
+              rememberTerminalTask(t.taskId)
+              api.logger.warn(`[AAMP] Task ${id} expired — removing from queue`)
+            }
+            pendingTasks.delete(id)
+          }
+        }
+      }, 60_000)
     })
 
     // ── 2. Prompt injection: surface the oldest pending task to the LLM ──────
