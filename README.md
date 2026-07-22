@@ -220,11 +220,69 @@ Default storage:
 
 ### Option 3: Connect OpenClaw directly
 
+Install the plugin from this repository or from npm:
+
 ```bash
-npx aamp-openclaw-plugin init
+# From local clone
+cd packages/aamp-openclaw-plugin
+npm install
+npm run build
+
+# Or from npm
+npm install -g aamp-openclaw-plugin
 ```
 
-The installer will provision an AAMP mailbox for your OpenClaw agent, write the plugin config automatically, and make the agent ready to receive `task.dispatch` mail. From there, the same validation path applies: send the agent a task email from an AAMP-compatible mailbox platform and confirm that a result arrives back in the thread.
+Configure through OpenClaw:
+
+```bash
+openclaw config set plugins.entries.aamp-openclaw-plugin.enabled true
+openclaw config set plugins.entries.aamp-openclaw-plugin.config.aampHost https://meshmail.ai
+```
+
+Or edit `~/.openclaw/openclaw.json` directly:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "aamp-openclaw-plugin": {
+        "enabled": true,
+        "config": {
+          "aampHost": "https://meshmail.ai",
+          "credentialsFile": "~/.openclaw/extensions/aamp-openclaw-plugin/.credentials.json",
+          "pairingFile": "~/.openclaw/extensions/aamp-openclaw-plugin/.pairing.json",
+          "senderPoliciesFile": "~/.openclaw/extensions/aamp-openclaw-plugin/.sender-policies.json"
+        }
+      }
+    }
+  }
+}
+```
+
+Key files managed by the plugin:
+
+| File | Purpose |
+|------|---------|
+| `.credentials.json` | Mailbox credentials (email, SMTP password) |
+| `.pairing.json` | Active pairing codes for first-contact authorization |
+| `.sender-policies.json` | Approved senders and dispatch context rules |
+| `.task-state.json` | Pending task queue state (do not edit manually) |
+
+Generate a pairing code for users:
+
+```bash
+openclaw aamp-pairing-code
+```
+
+Or programmatically via the `aamp_pairing_code` tool.
+
+Then restart the OpenClaw Gateway to activate the plugin:
+
+```bash
+openclaw gateway restart
+```
+
+The agent will now receive `task.dispatch` messages from approved senders and can reply with `task.result` through the AAMP protocol.
 
 ### Option 4: Connect a local Feishu bot to an existing agent
 
@@ -403,7 +461,7 @@ Included:
 - [packages/sdks/python](./packages/sdks/python)
 - [packages/sdks/go](./packages/sdks/go)
 - [packages/aamp-cli](./packages/aamp-cli) for mailbox profiles, local command nodes, and manual protocol inspection
-- [packages/aamp-openclaw-plugin](./packages/aamp-openclaw-plugin)
+- [packages/aamp-openclaw-plugin](./packages/aamp-openclaw-plugin) *(v0.1.43)*
 - [packages/aamp-acp-bridge](./packages/aamp-acp-bridge)
 - [packages/aamp-cli-bridge](./packages/aamp-cli-bridge)
 - [packages/aamp-feishu-bridge](./packages/aamp-feishu-bridge)
@@ -582,6 +640,7 @@ For protocol details, see:
 ```text
 docs/
   AAMP_CORE_SPECIFICATION.md
+  AGENT_SETUP.md
   assets/
 packages/
   sdks/
@@ -593,6 +652,34 @@ packages/
   aamp-acp-bridge/
   aamp-cli-bridge/
   aamp-feishu-bridge/
+  aamp-wechat-bridge/
+skills/
+  aamp/
 ```
 
 Examples in this repo may reference `meshmail.ai` as a compatible AAMP host.
+
+## Known Issues and Troubleshooting
+
+### Pending tasks hang indefinitely when `expiresAt` is absent
+
+**Symptom:** A task dispatched without an explicit `X-AAMP-Expires-At` header remains in the `pendingTasks` queue forever if the agent fails to call `task.result` (e.g., stuck in an investigation loop or hit by an LLM idle timeout).
+
+**Root cause:** The original `hasExpired()` function only checked `task.expiresAt`. When this field is absent, the task was never considered expired, so it was never cleaned up.
+
+**Fix (v0.1.43+):** 
+- `hasExpired()` now falls back to `task.receivedAt + 300 seconds` when `expiresAt` is absent.
+- A `setInterval` scan (every 60s) on `gateway_start` automatically rejects expired pending tasks and notifies the dispatcher.
+
+**Migration:** No action required. The fix is automatic once the plugin is updated and the Gateway restarted.
+
+### Task state files
+
+The OpenClaw plugin maintains runtime state under `~/.openclaw/extensions/aamp-openclaw-plugin/`:
+
+- `.task-state.json` — Pending task queue. Deleted automatically when the queue is empty.
+- `.credentials.json` — Mailbox credentials. Keep permissions restrictive (`chmod 600`).
+- `.pairing.json` — Active pairing codes. Expire automatically after 5 minutes.
+- `.sender-policies.json` — Approved sender list. Edited automatically on successful `pair.request`.
+
+These files are managed by the plugin. Manual edits may cause undefined behavior.
