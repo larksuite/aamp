@@ -514,14 +514,16 @@ function priorityRank(priority: TaskPriority): number {
   }
 }
 
-function hasExpired(task: Pick<PendingTask, 'expiresAt' | 'receivedAt'>): boolean {
+export function hasExpired(task: Pick<PendingTask, 'expiresAt' | 'receivedAt'>, useFallbackTimeout: boolean = true): boolean {
   if (task.expiresAt) {
     const expiresAtMs = new Date(task.expiresAt).getTime()
     if (Number.isFinite(expiresAtMs) && Date.now() >= expiresAtMs) return true
   }
-  // Fallback: tasks without explicit expiry default to 300s timeout
-  const receivedAtMs = task.receivedAt ? new Date(task.receivedAt).getTime() : 0
-  if (Number.isFinite(receivedAtMs) && Date.now() >= receivedAtMs + 300 * 1e3) return true
+  // Fallback timeout only applies to actionable inbound tasks when requested
+  if (useFallbackTimeout) {
+    const receivedAtMs = task.receivedAt ? new Date(task.receivedAt).getTime() : 0
+    if (Number.isFinite(receivedAtMs) && Date.now() >= receivedAtMs + 300 * 1e3) return true
+  }
   return false
 }
 
