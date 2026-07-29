@@ -1017,4 +1017,288 @@ describe('openclaw plugin runtime', () => {
       'Skipping historical task task-42 because the thread already reached a terminal state',
     ))
   })
+
+  it('auto-rejects pending tasks without explicit expiresAt after 300s fallback timeout', async () => {
+    const home = process.env.HOME!
+    const credentialsFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.credentials.json')
+    mkdirSync(path.dirname(credentialsFile), { recursive: true })
+    writeFileSync(credentialsFile, JSON.stringify({
+      email: 'agent@meshmail.ai',
+      mailboxToken: 'mailbox-token',
+      smtpPassword: 'smtp-1',
+    }))
+
+    vi.doMock('aamp-sdk', () => ({
+      AampClient: FakeAampClient,
+    }))
+
+    const plugin = await import('./index.ts')
+
+    // Test hasExpired directly: task without expiresAt and old receivedAt
+    const oldReceivedAt = new Date(Date.now() - 400_000).toISOString()
+    expect(plugin.hasExpired({ receivedAt: oldReceivedAt })).toBe(true)
+
+    // Test hasExpired: task without expiresAt and recent receivedAt
+    const recentReceivedAt = new Date().toISOString()
+    expect(plugin.hasExpired({ receivedAt: recentReceivedAt })).toBe(false)
+
+    // queuePendingTask should reject immediately if hasExpired returns true
+    expect(plugin.queuePendingTask({
+      taskId: 'task-expired-immediate',
+      from: 'dispatcher@meshmail.ai',
+      title: 'Already expired',
+      bodyText: 'This task is already expired.',
+      priority: 'normal',
+      to: 'agent@meshmail.ai',
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    })).toBe(false)
+
+    // queuePendingTask should accept if not expired
+    expect(plugin.queuePendingTask({
+      taskId: 'task-valid',
+      from: 'dispatcher@meshmail.ai',
+      title: 'Valid task',
+      bodyText: 'This task is valid.',
+      priority: 'normal',
+      to: 'agent@meshmail.ai',
+    })).toBe(true)
+  })
+
+  it('keeps expired tasks queued when sendResult fails and retries on next interval', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+
+    const home = process.env.HOME!
+    const credentialsFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.credentials.json')
+    mkdirSync(path.dirname(credentialsFile), { recursive: true })
+    writeFileSync(credentialsFile, JSON.stringify({
+      email: 'agent@meshmail.ai',
+      mailboxToken: 'mailbox-token',
+      smtpPassword: 'smtp-1',
+    }))
+
+    vi.doMock('aamp-sdk', () => ({
+      AampClient: FakeAampClient,
+    }))
+
+    const tools = new Map<string, { execute: (...args: any[]) => Promise<any> }>()
+    const handlers = new Map<string, (...args: any[]) => unknown>()
+    let service: { start: () => Promise<void>; stop: () => void } | null = null
+
+    const plugin = await import('./index.ts')
+    plugin.default.register({
+      config: {
+        channels: {
+          aamp: {
+            aampHost: 'https://meshmail.ai',
+            credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
+          },
+        },
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+      runtime: {
+        system: {
+          requestHeartbeatNow: vi.fn(),
+        },
+      },
+      registerChannel: vi.fn(),
+      registerService: (value: { start: () => Promise<void>; stop: () => void }) => {
+        service = value
+      },
+      on: (event: string, handler: (...args: any[]) => unknown) => {
+        handlers.set(event, handler)
+      },
+      registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<any> }) => {
+        tools.set(tool.name, tool)
+      },
+      registerCommand: vi.fn(),
+    })
+
+    await service!.start()
+    const client = FakeAampClient.fromMailboxIdentity.mock.results[0].value as FakeAampClient
+    await client.connect()
+
+    // Make sendResult fail
+    client.sendResult.mockRejectedValue(new Error('ECONNRESET'))
+
+    expect(plugin.queuePendingTask({
+      taskId: 'task-retry',
+      from: 'dispatcher@meshmail.ai',
+      title: 'Needs retry',
+      bodyText: 'This task will fail to notify.',
+      priority: 'normal',
+      to: 'agent@meshmail.ai',
+    })).toBe(true)
+
+    // Advance time past the 300s fallback timeout
+    vi.setSystemTime(Date.now() + 400_000)
+
+    // Trigger before_prompt_build which checks expiry and calls sendResult
+    const beforePromptBuild = handlers.get('before_prompt_build')
+    beforePromptBuild?.('before_prompt_build', {
+      sessionKey: 'aamp:default:task:task-retry',
+    })
+
+    await vi.runAllTicks()
+
+    // sendResult should have been called (and failed)
+    expect(client.sendResult).toHaveBeenCalledTimes(1)
+
+    // Task should still be in queue after failed sendResult
+    const pendingTasksTool = tools.get('aamp_pending_tasks')
+    await expect(pendingTasksTool!.execute('tool-call', {})).resolves.toEqual({
+      content: [{ type: 'text', text: expect.stringContaining('[task-retry]') }],
+    })
+
+    // before_prompt_build with a non-targeted session should not inject expired tasks
+    const prompt = beforePromptBuild?.('before_prompt_build', {
+      sessionKey: 'aamp:default:task:other-task',
+    }) as { prependContext?: string }
+
+    expect(prompt.prependContext).toBeUndefined()
+
+    vi.useRealTimers()
+    service!.stop()
+  })
+
+  it('does not apply fallback timeout to internal result: and help: notifications', async () => {
+    const home = process.env.HOME!
+    const credentialsFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.credentials.json')
+    mkdirSync(path.dirname(credentialsFile), { recursive: true })
+    writeFileSync(credentialsFile, JSON.stringify({
+      email: 'agent@meshmail.ai',
+      mailboxToken: 'mailbox-token',
+      smtpPassword: 'smtp-1',
+    }))
+
+    vi.doMock('aamp-sdk', () => ({
+      AampClient: FakeAampClient,
+    }))
+
+    const handlers = new Map<string, (...args: any[]) => unknown>()
+    let service: { start: () => Promise<void>; stop: () => void } | null = null
+
+    const plugin = await import('./index.ts')
+    plugin.default.register({
+      config: {
+        channels: {
+          aamp: {
+            aampHost: 'https://meshmail.ai',
+            credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
+          },
+        },
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+      runtime: {
+        system: {
+          requestHeartbeatNow: vi.fn(),
+        },
+      },
+      registerChannel: vi.fn(),
+      registerService: (value: { start: () => Promise<void>; stop: () => void }) => {
+        service = value
+      },
+      on: (event: string, handler: (...args: any[]) => unknown) => {
+        handlers.set(event, handler)
+      },
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+    })
+
+    await service!.start()
+    const client = FakeAampClient.fromMailboxIdentity.mock.results[0].value as FakeAampClient
+    await client.connect()
+
+    // Test hasExpired with useFallbackTimeout=false
+    const oldReceivedAt = new Date(Date.now() - 400_000).toISOString()
+    expect(plugin.hasExpired({ receivedAt: oldReceivedAt }, false)).toBe(false)
+    expect(plugin.hasExpired({ receivedAt: oldReceivedAt }, true)).toBe(true)
+
+    // Queue an internal notification (result:)
+    expect(plugin.queuePendingTask({
+      taskId: 'result:subtask-1',
+      from: 'other-agent@meshmail.ai',
+      title: 'Sub-task result',
+      bodyText: 'Sub-task completed.',
+      priority: 'normal',
+      to: 'agent@meshmail.ai',
+    })).toBe(true)
+
+    // Internal notification should still be injectable even after 300s
+    const beforePromptBuild = handlers.get('before_prompt_build')
+    const prompt = beforePromptBuild?.('before_prompt_build', {
+      sessionKey: 'aamp:wake:result:subtask-1',
+    }) as { prependContext?: string }
+
+    expect(prompt.prependContext).toContain('Task ID:  result:subtask-1')
+
+    // sendResult should NOT have been called for internal notifications
+    expect(client.sendResult).not.toHaveBeenCalled()
+
+    service!.stop()
+  })
+
+  it('cleans up the cleanupTimer on gateway stop', async () => {
+    const home = process.env.HOME!
+    const credentialsFile = path.join(home, '.openclaw', 'extensions', 'aamp-openclaw-plugin', '.credentials.json')
+    mkdirSync(path.dirname(credentialsFile), { recursive: true })
+    writeFileSync(credentialsFile, JSON.stringify({
+      email: 'agent@meshmail.ai',
+      mailboxToken: 'mailbox-token',
+      smtpPassword: 'smtp-1',
+    }))
+
+    vi.doMock('aamp-sdk', () => ({
+      AampClient: FakeAampClient,
+    }))
+
+    let service: { start: () => Promise<void>; stop: () => void } | null = null
+
+    const plugin = await import('./index.ts')
+    plugin.default.register({
+      config: {
+        channels: {
+          aamp: {
+            aampHost: 'https://meshmail.ai',
+            credentialsFile,
+            senderPolicies: [{ sender: 'dispatcher@meshmail.ai' }],
+          },
+        },
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+      runtime: {
+        system: {
+          requestHeartbeatNow: vi.fn(),
+        },
+      },
+      registerChannel: vi.fn(),
+      registerService: (value: { start: () => Promise<void>; stop: () => void }) => {
+        service = value
+      },
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+    })
+
+    await service!.start()
+    const client = FakeAampClient.fromMailboxIdentity.mock.results[0].value as FakeAampClient
+    expect(client.disconnect).not.toHaveBeenCalled()
+
+    service!.stop()
+
+    expect(client.disconnect).toHaveBeenCalled()
+  })
 })
